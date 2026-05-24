@@ -5,12 +5,12 @@ import {
 } from "recharts";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
-const GROQ_API_KEY = "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";
+const GROQ_API_KEY = process.env.REACT_APP_GROQ_API_KEY;
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL = "llama-3.3-70b-versatile";
 
 // Fallback: OpenRouter
-const OR_KEY = "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";
+const OR_KEY = process.env.REACT_APP_OPENROUTER_KEY;
 const OR_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OR_MODEL = "deepseek/deepseek-r1:free";
 
