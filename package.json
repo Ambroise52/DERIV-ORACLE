@@ -1,0 +1,21 @@
+@'
+{
+  "name": "deriv-oracle",
+  "version": "1.0.0",
+  "description": "Deriv Synthetic Indices Analysis Terminal",
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1",
+    "recharts": "^2.10.0"
+  },
+  "browserslist": {
+    "production": [">0.2%", "not dead"],
+    "development": ["last 1 chrome version"]
+  }
+}
+'@ | Out-File -FilePath "package.json" -Encoding utf8
