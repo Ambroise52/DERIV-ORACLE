@@ -127,35 +127,91 @@ function getTransitionMatrix(digits) {
   return matrix;
 }
 function getPredictionScores(digits) {
-  if (digits.length < 20) return null;
+  // Require at least 50 ticks for meaningful statistics
+  if (digits.length < 50) return null;
+  const n = digits.length;
   const gaps = getDigitGaps(digits);
   const zScores = getDigitZScores(digits);
   const recency = getRecencyScore(digits);
   const freq = getDigitFrequency(digits);
-  const maxGap = Math.max(...gaps.map(g => g.gap), 1);
+
+  // Expected avg gap = n/10 ticks
+  const expectedGap = n / 10;
+
   return Array(10).fill(0).map((_, digit) => {
     const z = zScores[digit].z;
-    const zSignal = Math.min(100, Math.max(0, 50 - (z * 15)));
     const gap = gaps[digit].gap;
-    const gapSignal = Math.min(100, (gap / maxGap) * 100);
     const rec = recency[digit].score;
-    const recSignal = Math.max(0, 100 - rec);
     const actualPct = parseFloat(freq[digit].pct);
-    const freqSignal = Math.min(100, Math.max(0, 50 + ((10 - actualPct) * 5)));
-    const combined = zSignal*0.30 + gapSignal*0.35 + recSignal*0.20 + freqSignal*0.15;
-    const winProb = 0.10 + (combined / 1000);
-    const b = 8;
-    const q = 1 - winProb;
-    const kelly = Math.max(0, ((b * winProb - q) / b));
+
+    // ── MATCHES signal (bet this digit will appear) ──────────────────────
+    // Only meaningful when digit is statistically cold (negative z-score)
+    // and gap is significantly above expected
+    const gapRatio = gap / expectedGap; // >1 = overdue, <1 = recently seen
+    const matchesSignalRaw = (
+      Math.max(0, -z) * 20 +          // cold z-score contribution
+      Math.max(0, gapRatio - 1) * 25 + // gap above expected contribution
+      Math.max(0, 10 - actualPct) * 3  // below expected frequency
+    );
+    // Cap and honest-scale: max raw ~100 but real edge is tiny
+    const matchesConf = Math.min(72, Math.max(5, matchesSignalRaw));
+
+    // ── DIFFERS signal (bet this digit will NOT appear) ──────────────────
+    // Stronger signal when digit is HOT (positive z-score)
+    const differsSignalRaw = (
+      Math.max(0, z) * 20 +             // hot z-score
+      Math.max(0, 1 - gapRatio) * 20 +  // recently seen
+      Math.max(0, actualPct - 10) * 3   // above expected frequency
+    );
+    const differsConf = Math.min(72, Math.max(5, differsSignalRaw));
+
+    // ── Honest win probability ───────────────────────────────────────────
+    // MATCHES: base 10% + tiny edge from cold status (max ~13%)
+    const matchWinProb = Math.min(0.13, 0.10 + Math.max(0, -z) * 0.008 + Math.max(0, gapRatio - 1) * 0.005);
+    // DIFFERS: base 90% - slight penalty if digit is cold (it might appear)
+    const differsWinProb = Math.min(0.92, 0.90 + Math.max(0, z) * 0.004);
+
+    // ── Recommended bet type ─────────────────────────────────────────────
+    // Only recommend MATCHES if gap > 1.5× expected AND z < -1
+    // Otherwise recommend DIFFERS (safer, higher win rate)
+    const recommendMatches = gap > expectedGap * 1.5 && z < -1.0;
+    const betType = recommendMatches ? "MATCHES" : "DIFFERS";
+    const confidence = recommendMatches ? matchesConf : differsConf;
+    const winProb = recommendMatches ? matchWinProb : differsWinProb;
+
+    // ── Kelly for MATCHES (8:1 payout) ──────────────────────────────────
+    const b_match = 8;
+    const kelly_match = Math.max(0, (b_match * matchWinProb - (1 - matchWinProb)) / b_match);
+    // ── Kelly for DIFFERS (0.95:1 payout typical on Deriv) ──────────────
+    const b_differs = 0.95;
+    const kelly_differs = Math.max(0, (b_differs * differsWinProb - (1 - differsWinProb)) / b_differs);
+    const halfKelly = recommendMatches
+      ? parseFloat((kelly_match / 2 * 100).toFixed(1))
+      : parseFloat((kelly_differs / 2 * 100).toFixed(1));
+
+    // ── Signal label ─────────────────────────────────────────────────────
+    // Only STRONG if multiple signals agree and gap is very large
+    const signal = (gap > expectedGap * 2 && z < -1.5 && rec < 30) ? "STRONG"
+      : (gap > expectedGap * 1.5 && z < -1.0) ? "MODERATE"
+      : betType === "DIFFERS" && z > 1.0 ? "MODERATE"
+      : "WEAK";
+
     return {
       digit,
-      confidence: parseFloat(combined.toFixed(1)),
+      betType,          // "MATCHES" or "DIFFERS"
+      confidence: parseFloat(confidence.toFixed(1)),
+      matchesConf: parseFloat(matchesConf.toFixed(1)),
+      differsConf: parseFloat(differsConf.toFixed(1)),
       gap,
+      expectedGap: parseFloat(expectedGap.toFixed(1)),
+      gapRatio: parseFloat(gapRatio.toFixed(2)),
       z,
       recScore: rec,
+      matchWinProb: parseFloat((matchWinProb * 100).toFixed(1)),
+      differsWinProb: parseFloat((differsWinProb * 100).toFixed(1)),
       winProb: parseFloat((winProb * 100).toFixed(1)),
-      halfKelly: parseFloat((kelly / 2 * 100).toFixed(1)),
-      signal: combined >= 70 ? "STRONG" : combined >= 55 ? "MODERATE" : combined >= 40 ? "WEAK" : "AVOID",
+      halfKelly,
+      signal,
     };
   }).sort((a, b) => b.confidence - a.confidence);
 }
@@ -564,6 +620,8 @@ export default function DerivOracle() {
   const [autoAI, setAutoAI] = useState(false);
   const [tickCount, setTickCount] = useState(0);
   const [winRateHistory, setWinRateHistory] = useState([]); // [{trade: N, winRate: X, pnl: Y}]
+  const [consecutiveLosses, setConsecutiveLosses] = useState(0);
+  const [bestTradeType, setBestTradeType] = useState("MATCHES"); // track which type wins more
 
   // ── PAPER TRADING STATE ───────────────────────────────────────────────────
   const [paperTrades, setPaperTrades] = useState([]);
@@ -691,16 +749,29 @@ export default function DerivOracle() {
         if (pendingTradeRef.current) {
           const pt = pendingTradeRef.current;
           const actualDigit = parseInt(parseFloat(price).toFixed(2).slice(-1));
-          const won = actualDigit === pt.digit;
-          const pnl = won ? pt.stake * pt.payout : -pt.stake;
+          const won = pt.betType === "DIFFERS"
+            ? actualDigit !== pt.digit   // DIFFERS wins when digit does NOT match
+            : actualDigit === pt.digit;  // MATCHES wins when digit matches
+          const pnl = won ? parseFloat((pt.stake * pt.payout).toFixed(2)) : -pt.stake;
           const resolved = { ...pt, result: won ? "WIN" : "LOSS", actualDigit, pnl, resolvedAt: tickIndexRef.current };
           const updatedTrades = [...paperTradesRef.current, resolved];
           paperTradesRef.current = updatedTrades;
           setPaperTrades([...updatedTrades]);
           setPaperBalance(b => parseFloat((b + pnl).toFixed(2)));
+          // Track consecutive losses
+          setConsecutiveLosses(prev => won ? 0 : prev + 1);
+          // Track which bet type performs better
+          setBestTradeType(prev => {
+            const all = [...paperTradesRef.current];
+            const matchWins = all.filter(t => t.betType === "MATCHES" && t.result === "WIN").length;
+            const matchTotal = all.filter(t => t.betType === "MATCHES").length || 1;
+            const diffWins = all.filter(t => t.betType === "DIFFERS" && t.result === "WIN").length;
+            const diffTotal = all.filter(t => t.betType === "DIFFERS").length || 1;
+            return (matchWins/matchTotal) >= (diffWins/diffTotal) ? "MATCHES" : "DIFFERS";
+          });
           // Track win rate over time for chart
           setWinRateHistory(prev => {
-            const resolved2 = [...paperTradesRef.current]; // includes just-resolved
+            const resolved2 = [...paperTradesRef.current];
             const wins2 = resolved2.filter(t => t.result === "WIN").length;
             const wr = resolved2.length ? parseFloat(((wins2 / resolved2.length) * 100).toFixed(1)) : 0;
             const totalPnl2 = resolved2.reduce((s, t) => s + t.pnl, 0);
@@ -777,17 +848,18 @@ export default function DerivOracle() {
   useEffect(() => { pendingTradeRef.current = pendingTrade; }, [pendingTrade]);
 
   // ── PAPER TRADE LOGGER ────────────────────────────────────────────────────
-  const logPaperTrade = useCallback((digit, confidence, winProb, halfKelly) => {
+  const logPaperTrade = useCallback((digit, confidence, winProb, halfKelly, betType) => {
     if (pendingTradeRef.current) return; // one trade at a time
     const autoStake = parseFloat((paperBalance * halfKelly / 100).toFixed(2));
     const stake = Math.max(1, Math.min(autoStake, paperBalance * 0.2)); // cap at 20% bankroll
     const trade = {
       id: Date.now(),
       digit,
+      betType: betType || "MATCHES",
       confidence,
       winProb,
       stake: parseFloat(paperStake || stake),
-      payout: paperPayout,
+      payout: betType === "DIFFERS" ? 0.95 : paperPayout,
       symbol,
       placedAt: tickIndexRef.current,
       result: "PENDING",
@@ -806,7 +878,20 @@ export default function DerivOracle() {
     const winRate = resolved.length ? ((wins.length / resolved.length) * 100).toFixed(1) : "0.0";
     const avgConf = resolved.length ? (resolved.reduce((s, t) => s + t.confidence, 0) / resolved.length).toFixed(1) : "0.0";
     const targetMet = resolved.length >= 200 && parseFloat(winRate) >= 12;
-    return { total: resolved.length, wins: wins.length, losses: resolved.length - wins.length, winRate, totalPnl: totalPnl.toFixed(2), avgConf, targetMet };
+    // Break down by bet type
+    const matchTrades = resolved.filter(t => t.betType === "MATCHES");
+    const matchWins = matchTrades.filter(t => t.result === "WIN");
+    const differsTrades = resolved.filter(t => t.betType === "DIFFERS" || !t.betType);
+    const differsWins = differsTrades.filter(t => t.result === "WIN");
+    const matchWR = matchTrades.length ? ((matchWins.length / matchTrades.length) * 100).toFixed(1) : "—";
+    const differsWR = differsTrades.length ? ((differsWins.length / differsTrades.length) * 100).toFixed(1) : "—";
+    return {
+      total: resolved.length, wins: wins.length,
+      losses: resolved.length - wins.length, winRate,
+      totalPnl: totalPnl.toFixed(2), avgConf, targetMet,
+      matchWR, differsWR,
+      matchTotal: matchTrades.length, differsTotal: differsTrades.length,
+    };
   })();
 
   // Multi-strategy signals + alerts (computed every render with latest data)
@@ -1494,7 +1579,7 @@ export default function DerivOracle() {
           )}
 
           {/* ── PREDICT TAB ── */}
-          {activeTab === "predict" && digits.length >= 20 && predictTopPick && (
+          {activeTab === "predict" && digits.length >= 50 && predictTopPick && (
             <>
                 {/* TOP PICK BANNER */}
                 <div className="panel" style={{ marginBottom: 12, border: "1px solid var(--green)", background: "rgba(0,255,136,0.04)" }}>
@@ -1514,9 +1599,13 @@ export default function DerivOracle() {
                           <div style={{ fontSize: 10, color: "var(--text-dim)" }}>Z-SCORE: {predictTopPick?.z}</div>
                         </div>
                         <div style={{ marginLeft: 16 }}>
-                          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>EST. WIN PROB</div>
-                          <div style={{ fontSize: 20, fontWeight: 700, color: "var(--cyan)" }}>{predictTopPick?.winProb}%</div>
-                          <div style={{ fontSize: 10, color: "var(--text-dim)" }}>BREAK-EVEN: 11.1%</div>
+                          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>BET TYPE</div>
+                          <div style={{ fontSize: 20, fontWeight: 700, color: predictTopPick?.betType === "MATCHES" ? "var(--orange)" : "var(--cyan)" }}>
+                            {predictTopPick?.betType}
+                          </div>
+                          <div style={{ fontSize: 10, color: "var(--text-dim)" }}>
+                            WIN PROB: {predictTopPick?.betType === "MATCHES" ? predictTopPick?.matchWinProb : predictTopPick?.differsWinProb}%
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1529,8 +1618,8 @@ export default function DerivOracle() {
                         <span style={{ fontSize: 13, color: "var(--green)" }}>→ ${(paperBalance * (predictTopPick?.halfKelly || 0) / 100).toFixed(2)}</span>
                       </div>
                       <button className="btn btn-green" style={{ marginTop: 8 }}
-                        onClick={() => { setActiveTab("papertrade"); logPaperTrade(predictTopPick.digit, predictTopPick.confidence, predictTopPick.winProb, predictTopPick.halfKelly); }}>
-                        📋 Log Paper Trade
+                        onClick={() => { setActiveTab("papertrade"); logPaperTrade(predictTopPick.digit, predictTopPick.confidence, predictTopPick.winProb, predictTopPick.halfKelly, predictTopPick.betType); }}>
+                        📋 Log {predictTopPick?.betType} Trade
                       </button>
                     </div>
                   </div>
@@ -1543,12 +1632,12 @@ export default function DerivOracle() {
                     {predictScores.map((s, rank) => (
                       <div key={s.digit}
                         className={`pred-card ${rank === 0 ? "top-pick" : s.signal === "STRONG" ? "strong" : s.signal === "AVOID" ? "avoid" : ""}`}
-                        onClick={() => { setActiveTab("papertrade"); logPaperTrade(s.digit, s.confidence, s.winProb, s.halfKelly); }}>
+                        onClick={() => { setActiveTab("papertrade"); logPaperTrade(s.digit, s.confidence, s.winProb, s.halfKelly, s.betType); }}>
                         {rank === 0 && <div style={{ position: "absolute", top: 3, right: 3, fontSize: 8, color: "var(--green)" }}>★TOP</div>}
                         <div className={`pred-digit ${rank === 0 ? "green" : s.signal === "STRONG" ? "orange" : s.signal === "AVOID" ? "red" : "yellow"}`}>{s.digit}</div>
                         <div className={`pred-conf ${rank === 0 ? "green" : "dim"}`}>{s.confidence}%</div>
-                        <div className="pred-gap">gap:{s.gap}</div>
-                        <div className="pred-gap">z:{s.z}</div>
+                        <div className="pred-gap">gap:{s.gap}/{s.expectedGap}</div>
+                        <div className="pred-gap" style={{ color: s.betType === "MATCHES" ? "var(--orange)" : "var(--cyan)", fontSize: 8, fontWeight: 700 }}>{s.betType}</div>
                         <div className={`pred-signal sig-${s.signal.toLowerCase()}`}>{s.signal}</div>
                       </div>
                     ))}
@@ -1582,8 +1671,8 @@ export default function DerivOracle() {
                 </div>
             </>
           )}
-          {activeTab === "predict" && digits.length < 20 && (
-            <div className="panel"><div className="empty-state">Need at least 20 ticks to generate predictions. Connect live or load demo data.</div></div>
+          {activeTab === "predict" && digits.length < 50 && (
+            <div className="panel"><div className="empty-state">Need at least 50 ticks for reliable predictions. {digits.length}/50 loaded. Connect live — historical data loads automatically.</div></div>
           )}
 
           {/* ── PAPER TRADE TAB ── */}
@@ -1675,6 +1764,51 @@ export default function DerivOracle() {
                 </div>
               </div>
 
+              {/* Loss streak warning */}
+              {consecutiveLosses >= 5 && (
+                <div className="panel" style={{ marginBottom: 12, border: "1px solid var(--red)", background: "var(--red-dim)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
+                    <span style={{ fontSize: 20 }}>🛑</span>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--red)", fontFamily: "var(--head)", letterSpacing: 2 }}>
+                        {consecutiveLosses} CONSECUTIVE LOSSES — STOP TRADING
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 2 }}>
+                        Switch index, wait for more ticks, or review your signal threshold. Never chase losses.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Bet type performance breakdown */}
+              {ptStats.total >= 5 && (
+                <div className="panel" style={{ marginBottom: 12 }}>
+                  <div className="panel-title"><span className="dot dot-cyan" />Performance by Bet Type</div>
+                  <div className="two-col">
+                    <div style={{ padding: "12px", background: "var(--orange-dim)", border: "1px solid rgba(255,107,53,0.3)", borderRadius: 3, textAlign: "center" }}>
+                      <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, marginBottom: 6 }}>MATCHES TRADES</div>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: "var(--orange)", fontFamily: "var(--head)" }}>{ptStats.matchWR}%</div>
+                      <div style={{ fontSize: 10, color: "var(--text-dim)" }}>{ptStats.matchTotal} trades · need &gt;11.1%</div>
+                      <div style={{ fontSize: 10, marginTop: 4, color: parseFloat(ptStats.matchWR) >= 11.1 ? "var(--green)" : "var(--red)" }}>
+                        {parseFloat(ptStats.matchWR) >= 11.1 ? "✅ PROFITABLE" : "❌ BELOW BREAK-EVEN"}
+                      </div>
+                    </div>
+                    <div style={{ padding: "12px", background: "var(--cyan-dim)", border: "1px solid rgba(0,191,255,0.3)", borderRadius: 3, textAlign: "center" }}>
+                      <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, marginBottom: 6 }}>DIFFERS TRADES</div>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: "var(--cyan)", fontFamily: "var(--head)" }}>{ptStats.differsWR}%</div>
+                      <div style={{ fontSize: 10, color: "var(--text-dim)" }}>{ptStats.differsTotal} trades · need &gt;47.4%</div>
+                      <div style={{ fontSize: 10, marginTop: 4, color: parseFloat(ptStats.differsWR) >= 47.4 ? "var(--green)" : "var(--red)" }}>
+                        {parseFloat(ptStats.differsWR) >= 47.4 ? "✅ PROFITABLE" : "❌ BELOW BREAK-EVEN"}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--text-dim)", marginTop: 8 }}>
+                    Best performing type: <span style={{ color: "var(--green)", fontWeight: 700 }}>{bestTradeType}</span> — system will prioritize this going forward
+                  </div>
+                </div>
+              )}
+
               {/* Trade log */}
               <div className="panel">
                 <div className="panel-title"><span className="dot dot-orange" />Trade Log — {paperTrades.length} entries</div>
@@ -1687,7 +1821,7 @@ export default function DerivOracle() {
                     <table className="pt-table">
                       <thead>
                         <tr>
-                          <th>#</th><th>DIGIT</th><th>CONF%</th><th>WIN%</th>
+                          <th>#</th><th>DIGIT</th><th>TYPE</th><th>CONF%</th>
                           <th>STAKE</th><th>RESULT</th><th>ACTUAL</th><th>P&amp;L</th>
                         </tr>
                       </thead>
@@ -1696,8 +1830,8 @@ export default function DerivOracle() {
                           <tr key={t.id}>
                             <td className="dim">{paperTrades.length - i}</td>
                             <td style={{ color: "var(--cyan)", fontWeight: 700 }}>{t.digit}</td>
+                            <td style={{ color: t.betType === "MATCHES" ? "var(--orange)" : "var(--cyan)", fontSize: 9, letterSpacing: 1 }}>{t.betType || "MATCHES"}</td>
                             <td className="yellow">{t.confidence}%</td>
-                            <td className="dim">{t.winProb}%</td>
                             <td>${t.stake}</td>
                             <td className={t.result === "WIN" ? "pt-win" : t.result === "LOSS" ? "pt-loss" : "pt-pending"}>
                               {t.result === "WIN" ? "✓ WIN" : t.result === "LOSS" ? "✗ LOSS" : "⏳ PENDING"}
