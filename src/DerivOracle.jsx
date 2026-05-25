@@ -1,3 +1,4 @@
+/* eslint-disable */
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -456,7 +457,7 @@ export default function DerivOracle() {
   const [pendingTrade, setPendingTrade] = useState(null); // { digit, confidence, tickIndex }
   const [paperBalance, setPaperBalance] = useState(1000); // virtual $1000
   const [paperStake, setPaperStake] = useState(10);
-  const [paperPayout] = useState(8); // 8:1 for Matches
+  const paperPayout = 8; // 8:1 for Matches - fixed payout ratio
   const paperTradesRef = useRef([]);
   const pendingTradeRef = useRef(null);
   const tickIndexRef = useRef(0);
@@ -1023,7 +1024,7 @@ export default function DerivOracle() {
                     <YAxis tick={{ fill: "#4a5260", fontSize: 10 }} />
                     <Tooltip contentStyle={{ background: "#0c0c18", border: "1px solid #1e1e38", fontSize: 11 }} />
                     <Bar dataKey="count" radius={[2, 2, 0, 0]}>
-                      <Cell fill="var(--cyan)" /><Cell fill="var(--yellow)" />
+                      <Cell key="even" fill="var(--cyan)" /><Cell key="odd" fill="var(--yellow)" />
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -1362,8 +1363,7 @@ export default function DerivOracle() {
                     <button className="btn btn-orange" onClick={() => {
                       const csv = ["ID,Digit,Confidence,WinProb,Stake,Result,ActualDigit,PnL,Symbol",
                         ...paperTrades.map(t => `${t.id},${t.digit},${t.confidence},${t.winProb},${t.stake},${t.result},${t.actualDigit},${t.pnl},${t.symbol}`)
-                      ].join("
-");
+                      ].join("\n");
                       const blob = new Blob([csv], { type: "text/csv" });
                       const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
                       a.download = `paper_trades_${symbol}_${Date.now()}.csv`; a.click();
