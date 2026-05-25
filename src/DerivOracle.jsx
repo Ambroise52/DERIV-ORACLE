@@ -118,7 +118,7 @@ function getRecencyScore(digits) {
     scores[d] += weight;
   });
   const max = Math.max(...scores, 1);
-  return predictScores.map((s, i) => ({ digit: i, score: parseFloat((s / max * 100).toFixed(1)) }));
+  return scores.map((s, i) => ({ digit: i, score: parseFloat((s / max * 100).toFixed(1)) }));
 }
 function getTransitionMatrix(digits) {
   const matrix = Array(10).fill(null).map(() => Array(10).fill(0));
