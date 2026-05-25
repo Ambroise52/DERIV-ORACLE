@@ -160,6 +160,80 @@ function getPredictionScores(digits) {
   }).sort((a, b) => b.confidence - a.confidence);
 }
 
+// ── MULTI-STRATEGY SIGNAL ENGINE ─────────────────────────────────────────────
+
+// Returns unified signal for all 4 strategies based on current market data
+function getAllStrategySignals(digits, ticks, barrier, matchTarget) {
+  if (!digits.length || !ticks.length) return null;
+
+  const eo = getEvenOddStats(digits);
+  const rf = getRiseFallStats(ticks);
+  const ou = getOverUnderStats(digits, barrier);
+  const md = getMatchesDiffersStats(digits, matchTarget);
+  const n = digits.length;
+
+  // Even/Odd signal
+  const eoImbalance = Math.abs(parseFloat(eo.evenPct) - 50);
+  const eoStreakRisk = eo.streak >= 5 ? "HIGH" : eo.streak >= 3 ? "MEDIUM" : "LOW";
+  const eoConf = Math.min(95, 50 + eoImbalance * 1.5 + (eo.streak >= 4 ? 15 : 0));
+  const eoBet = parseFloat(eo.evenPct) < 48 ? "EVEN" : parseFloat(eo.evenPct) > 52 ? "ODD" : eo.streak >= 4 ? (eo.streakType === "EVEN" ? "ODD" : "EVEN") : "WAIT";
+
+  // Rise/Fall signal
+  const rfTotal = rf.rises + rf.falls || 1;
+  const rfImbalance = Math.abs((rf.rises / rfTotal) - 0.5) * 100;
+  const rfConf = Math.min(95, 50 + rfImbalance + (rf.streak >= 4 ? 15 : 0));
+  const rfBet = rf.streak >= 5 ? (rf.streakType === "RISE" ? "FALL" : "RISE") :
+                rf.rises > rf.falls * 1.1 ? "RISE" : rf.falls > rf.rises * 1.1 ? "FALL" : "WAIT";
+
+  // Over/Under signal
+  const ouImbalance = Math.abs(parseFloat(ou.overPct) - 50);
+  const ouConf = Math.min(95, 50 + ouImbalance * 1.2);
+  const ouBet = parseFloat(ou.overPct) > 58 ? `OVER ${barrier}` : parseFloat(ou.underPct) > 58 ? `UNDER ${barrier}` : "WAIT";
+
+  // Matches/Differs - use top prediction score
+  const gaps = getDigitGaps(digits);
+  const zscores = getDigitZScores(digits);
+  const coldest = gaps.sort((a, b) => b.gap - a.gap)[0];
+  const mdConf = Math.min(95, 40 + (coldest.gap / Math.max(n * 0.3, 1)) * 50);
+  const mdBet = `MATCHES ${coldest.digit}`;
+
+  const signals = [
+    { strategy: "Even/Odd", bet: eoBet, confidence: parseFloat(eoConf.toFixed(1)), streak: eo.streak, streakType: eo.streakType, risk: eoStreakRisk, winProb: parseFloat((0.5 + eoImbalance/200).toFixed(3)) },
+    { strategy: "Rise/Fall", bet: rfBet, confidence: parseFloat(rfConf.toFixed(1)), streak: rf.streak, streakType: rf.streakType, risk: rf.streak >= 5 ? "HIGH" : rf.streak >= 3 ? "MEDIUM" : "LOW", winProb: parseFloat((0.5 + rfImbalance/200).toFixed(3)) },
+    { strategy: "Over/Under", bet: ouBet, confidence: parseFloat(ouConf.toFixed(1)), streak: 0, streakType: null, risk: "LOW", winProb: parseFloat((0.5 + ouImbalance/200).toFixed(3)) },
+    { strategy: "Matches", bet: mdBet, confidence: parseFloat(mdConf.toFixed(1)), streak: coldest.gap, streakType: `digit ${coldest.digit}`, risk: "LOW", winProb: parseFloat((0.10 + mdConf/1000).toFixed(3)) },
+  ].sort((a, b) => b.confidence - a.confidence);
+
+  return signals;
+}
+
+// Streak alert detector
+function getStreakAlerts(digits, ticks, barrier) {
+  const alerts = [];
+  if (!digits.length) return alerts;
+  const eo = getEvenOddStats(digits);
+  const rf = getRiseFallStats(ticks);
+  const ou = getOverUnderStats(digits, barrier);
+  const gaps = getDigitGaps(digits);
+  const maxGap = Math.max(...gaps.map(g => g.gap));
+  const mostOverdue = gaps.find(g => g.gap === maxGap);
+
+  if (eo.streak >= 6) alerts.push({ level: "CRITICAL", msg: `${eo.streak}× ${eo.streakType} streak — extreme reversal risk`, strategy: "Even/Odd" });
+  else if (eo.streak >= 4) alerts.push({ level: "WARNING", msg: `${eo.streak}× ${eo.streakType} streak — watch for reversal`, strategy: "Even/Odd" });
+
+  if (rf.streak >= 6) alerts.push({ level: "CRITICAL", msg: `${rf.streak}× ${rf.streakType} — trend overextended`, strategy: "Rise/Fall" });
+  else if (rf.streak >= 4) alerts.push({ level: "WARNING", msg: `${rf.streak}× ${rf.streakType} — strong momentum`, strategy: "Rise/Fall" });
+
+  if (maxGap >= 25) alerts.push({ level: "CRITICAL", msg: `Digit ${mostOverdue.digit} absent for ${maxGap} ticks — strong Matches signal`, strategy: "Matches" });
+  else if (maxGap >= 15) alerts.push({ level: "WARNING", msg: `Digit ${mostOverdue.digit} overdue by ${maxGap} ticks`, strategy: "Matches" });
+
+  const overPct = parseFloat(ou.overPct);
+  if (overPct > 70 || overPct < 30) alerts.push({ level: "WARNING", msg: `Over/Under heavily skewed: ${ou.overPct}% over barrier ${ou.barrier}`, strategy: "Over/Under" });
+
+  return alerts;
+}
+
+
 
 // ── AI ANALYSIS ───────────────────────────────────────────────────────────────
 async function fetchAIInsight(stats, ticks, symbol) {
@@ -419,7 +493,45 @@ const css = `
   .pnl-positive{color:var(--green);font-weight:700;}
   .pnl-negative{color:var(--red);font-weight:700;}
 
-  @media(max-width:900px){
+
+  /* Multi-strategy signals */
+  .strategy-card{padding:12px 14px;border:1px solid var(--border);border-radius:4px;
+    display:flex;align-items:center;justify-content:space-between;gap:8px;
+    transition:all 0.3s;margin-bottom:6px;}
+  .strategy-card.top{border-color:var(--green);background:rgba(0,255,136,0.04);}
+  .strategy-card.good{border-color:var(--orange);background:rgba(255,107,53,0.04);}
+  .strategy-card.wait{opacity:0.5;}
+  .sc-left{display:flex;align-items:center;gap:12px;}
+  .sc-name{font-family:var(--head);font-size:13px;letter-spacing:2px;font-weight:700;min-width:90px;}
+  .sc-bet{font-size:12px;font-weight:700;letter-spacing:1px;padding:3px 10px;
+    border-radius:2px;background:var(--green-dim);border:1px solid var(--green);color:var(--green);}
+  .sc-bet.wait{background:transparent;border-color:var(--border2);color:var(--text-dim);}
+  .sc-right{display:flex;align-items:center;gap:16px;}
+  .sc-conf{font-size:18px;font-weight:700;font-family:var(--head);}
+  .sc-streak{font-size:10px;color:var(--text-dim);letter-spacing:1px;}
+  .sc-bar{width:80px;height:5px;background:var(--border);border-radius:3px;overflow:hidden;}
+  .sc-bar-fill{height:100%;border-radius:3px;transition:width 0.5s ease;}
+  .sc-rank{font-size:10px;color:var(--text-dim);width:20px;text-align:center;}
+  /* Alerts */
+  .alert-item{display:flex;align-items:center;gap:10px;padding:8px 12px;
+    border-radius:3px;margin-bottom:6px;font-size:11px;}
+  .alert-critical{background:var(--red-dim);border:1px solid var(--red);}
+  .alert-warning{background:var(--yellow-dim);border:1px solid var(--yellow);}
+  .alert-ok{background:var(--green-dim);border:1px solid var(--green);}
+  .alert-icon{font-size:14px;min-width:20px;}
+  .alert-strategy{font-size:9px;letter-spacing:2px;padding:2px 6px;border-radius:2px;
+    background:var(--border);color:var(--text-dim);white-space:nowrap;}
+  /* Win rate chart */
+  .winrate-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;}
+  .wr-stat{padding:10px;border:1px solid var(--border);border-radius:3px;text-align:center;}
+  .wr-stat-val{font-size:20px;font-weight:700;font-family:var(--head);}
+  .wr-stat-label{font-size:9px;letter-spacing:2px;color:var(--text-dim);margin-top:2px;}
+  /* Best strategy badge */
+  .best-badge{display:inline-flex;align-items:center;gap:8px;padding:6px 14px;
+    border:1px solid var(--green);border-radius:3px;background:var(--green-dim);
+    font-size:11px;font-weight:700;letter-spacing:2px;color:var(--green);}
+
+    @media(max-width:900px){
     .grid-top,.grid-2,.grid-3{grid-template-columns:1fr;}
     .symbol-bar{gap:4px;}
   }
@@ -451,6 +563,7 @@ export default function DerivOracle() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [autoAI, setAutoAI] = useState(false);
   const [tickCount, setTickCount] = useState(0);
+  const [winRateHistory, setWinRateHistory] = useState([]); // [{trade: N, winRate: X, pnl: Y}]
 
   // ── PAPER TRADING STATE ───────────────────────────────────────────────────
   const [paperTrades, setPaperTrades] = useState([]);
@@ -585,6 +698,14 @@ export default function DerivOracle() {
           paperTradesRef.current = updatedTrades;
           setPaperTrades([...updatedTrades]);
           setPaperBalance(b => parseFloat((b + pnl).toFixed(2)));
+          // Track win rate over time for chart
+          setWinRateHistory(prev => {
+            const resolved2 = [...paperTradesRef.current]; // includes just-resolved
+            const wins2 = resolved2.filter(t => t.result === "WIN").length;
+            const wr = resolved2.length ? parseFloat(((wins2 / resolved2.length) * 100).toFixed(1)) : 0;
+            const totalPnl2 = resolved2.reduce((s, t) => s + t.pnl, 0);
+            return [...prev.slice(-99), { trade: resolved2.length, winRate: wr, pnl: parseFloat(totalPnl2.toFixed(2)) }];
+          });
           pendingTradeRef.current = null;
           setPendingTrade(null);
         }
@@ -687,6 +808,13 @@ export default function DerivOracle() {
     const targetMet = resolved.length >= 200 && parseFloat(winRate) >= 12;
     return { total: resolved.length, wins: wins.length, losses: resolved.length - wins.length, winRate, totalPnl: totalPnl.toFixed(2), avgConf, targetMet };
   })();
+
+  // Multi-strategy signals + alerts (computed every render with latest data)
+  const allSignals = (digits.length >= 20 && ticks.length > 1)
+    ? getAllStrategySignals(digits, ticks, barrier, matchTarget) : null;
+  const streakAlerts = digits.length >= 10
+    ? getStreakAlerts(digits, ticks, barrier) : [];
+  const bestSignal = allSignals ? allSignals[0] : null;
 
   // Predict tab derived values (computed here to avoid IIFE in JSX)
   const predictScores = digits.length >= 20 ? (getPredictionScores(digits) || []) : [];
@@ -843,7 +971,7 @@ export default function DerivOracle() {
           {/* TABS */}
           {ticks.length > 0 && (
             <div className="tabs">
-              {[["overview","Overview"],["evenodd","Even/Odd"],["risefall","Rise/Fall"],["matchdiffer","Matches/Differs"],["overunder","Over/Under"],["predict","🎯 Predict"],["papertrade","📋 Paper Trade"]].map(([id, label]) => (
+              {[["overview","Overview"],["evenodd","Even/Odd"],["risefall","Rise/Fall"],["matchdiffer","Matches/Differs"],["overunder","Over/Under"],["signals","⚡ Signals"],["predict","🎯 Predict"],["papertrade","📋 Paper Trade"]].map(([id, label]) => (
                 <button key={id} className={`tab ${activeTab === id ? "active" : ""}`} onClick={() => setActiveTab(id)}>{label}</button>
               ))}
             </div>
@@ -1190,6 +1318,181 @@ export default function DerivOracle() {
           )}
 
 
+
+          {/* ── SIGNALS TAB ── */}
+          {activeTab === "signals" && (
+            <>
+              {!allSignals ? (
+                <div className="panel"><div className="empty-state">Connect live or load demo data to generate signals.</div></div>
+              ) : (
+                <>
+                  {/* ALERT BAR */}
+                  {streakAlerts.length > 0 && (
+                    <div className="panel" style={{ marginBottom: 12 }}>
+                      <div className="panel-title"><span className="dot dot-red" />⚠ Live Alerts — {streakAlerts.length} active</div>
+                      {streakAlerts.map((a, i) => (
+                        <div key={i} className={`alert-item alert-${a.level.toLowerCase()}`}>
+                          <span className="alert-icon">{a.level === "CRITICAL" ? "🔴" : "🟡"}</span>
+                          <span style={{ flex: 1 }}>{a.msg}</span>
+                          <span className="alert-strategy">{a.strategy}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {streakAlerts.length === 0 && (
+                    <div className="panel" style={{ marginBottom: 12 }}>
+                      <div className="alert-item alert-ok">
+                        <span className="alert-icon">🟢</span>
+                        <span>No alerts — market conditions are normal across all strategies</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* BEST STRATEGY BANNER */}
+                  <div className="panel" style={{ marginBottom: 12, border: "1px solid var(--green)", background: "rgba(0,255,136,0.03)" }}>
+                    <div className="panel-title"><span className="dot dot-green" />Best Strategy Right Now</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                      <div>
+                        <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>STRATEGY</div>
+                        <div className="best-badge">⚡ {bestSignal.strategy}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>BET</div>
+                        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--green)", fontFamily: "var(--head)" }}>{bestSignal.bet}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>CONFIDENCE</div>
+                        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--orange)" }}>{bestSignal.confidence}%</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>EST. WIN PROB</div>
+                        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--cyan)" }}>{(bestSignal.winProb * 100).toFixed(1)}%</div>
+                      </div>
+                      <div style={{ marginLeft: "auto" }}>
+                        <div style={{ fontSize: 10, color: "var(--text-dim)", marginBottom: 4 }}>CURRENT STREAK</div>
+                        <div className={`streak-badge ${bestSignal.streakType ? (bestSignal.strategy === "Rise/Fall" ? (bestSignal.streakType === "RISE" ? "streak-rise" : "streak-fall") : "streak-even") : ""}`}>
+                          {bestSignal.streak > 0 ? `${bestSignal.streak}× ${bestSignal.streakType}` : "—"}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ALL STRATEGY RANKINGS */}
+                  <div className="panel" style={{ marginBottom: 12 }}>
+                    <div className="panel-title"><span className="dot dot-orange" />All Strategy Rankings — Sorted by Signal Strength</div>
+                    {allSignals.map((sig, rank) => (
+                      <div key={sig.strategy} className={`strategy-card ${rank === 0 ? "top" : rank === 1 ? "good" : sig.bet === "WAIT" ? "wait" : ""}`}>
+                        <div className="sc-left">
+                          <span className="sc-rank" style={{ color: rank === 0 ? "var(--green)" : "var(--text-dim)" }}>#{rank + 1}</span>
+                          <span className="sc-name" style={{ color: rank === 0 ? "var(--green)" : rank === 1 ? "var(--orange)" : "var(--text-dim)" }}>{sig.strategy}</span>
+                          <span className={`sc-bet ${sig.bet === "WAIT" ? "wait" : ""}`} style={{ borderColor: rank === 0 ? "var(--green)" : rank === 1 ? "var(--orange)" : "var(--border2)", color: rank === 0 ? "var(--green)" : rank === 1 ? "var(--orange)" : "var(--text-dim)", background: rank === 0 ? "var(--green-dim)" : rank === 1 ? "var(--orange-dim)" : "transparent" }}>
+                            {sig.bet}
+                          </span>
+                          {sig.streak > 0 && (
+                            <span className="sc-streak">{sig.streak}× {sig.streakType}</span>
+                          )}
+                        </div>
+                        <div className="sc-right">
+                          <div>
+                            <div className="sc-bar">
+                              <div className="sc-bar-fill" style={{ width: `${sig.confidence}%`, background: rank === 0 ? "var(--green)" : rank === 1 ? "var(--orange)" : "var(--border2)" }} />
+                            </div>
+                          </div>
+                          <div className={`sc-conf ${rank === 0 ? "green" : rank === 1 ? "orange" : "dim"}`}>{sig.confidence}%</div>
+                          <div style={{ fontSize: 10, color: "var(--text-dim)", textAlign: "right" }}>
+                            <div>win: {(sig.winProb * 100).toFixed(1)}%</div>
+                            <div style={{ color: sig.risk === "HIGH" ? "var(--red)" : sig.risk === "MEDIUM" ? "var(--yellow)" : "var(--green)" }}>risk: {sig.risk}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* WIN RATE HISTORY CHART */}
+                  {winRateHistory.length >= 3 && (
+                    <div className="panel" style={{ marginBottom: 12 }}>
+                      <div className="panel-title"><span className="dot dot-cyan" />Win Rate Over Time — Paper Trading Performance</div>
+                      <div className="winrate-stats">
+                        <div className="wr-stat">
+                          <div className={`wr-stat-val ${parseFloat(ptStats.winRate) >= 12 ? "green" : parseFloat(ptStats.winRate) >= 10 ? "yellow" : "red"}`}>{ptStats.winRate}%</div>
+                          <div className="wr-stat-label">WIN RATE</div>
+                        </div>
+                        <div className="wr-stat">
+                          <div className={`wr-stat-val ${parseFloat(ptStats.totalPnl) >= 0 ? "green" : "red"}`}>{parseFloat(ptStats.totalPnl) >= 0 ? "+" : ""}${ptStats.totalPnl}</div>
+                          <div className="wr-stat-label">TOTAL P&L</div>
+                        </div>
+                        <div className="wr-stat">
+                          <div className="wr-stat-val cyan">{ptStats.wins}W / {ptStats.losses}L</div>
+                          <div className="wr-stat-label">WIN / LOSS</div>
+                        </div>
+                        <div className="wr-stat">
+                          <div className={`wr-stat-val ${ptStats.targetMet ? "green" : "yellow"}`}>{ptStats.total}/200</div>
+                          <div className="wr-stat-label">TRADES DONE</div>
+                        </div>
+                      </div>
+                      <ResponsiveContainer width="100%" height={160}>
+                        <AreaChart data={winRateHistory} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+                          <defs>
+                            <linearGradient id="gWR" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#00bfff" stopOpacity={0.2} />
+                              <stop offset="95%" stopColor="#00bfff" stopOpacity={0} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#1a1a2e" />
+                          <XAxis dataKey="trade" tick={{ fill: "#4a5260", fontSize: 9 }} label={{ value: "trades", position: "insideBottomRight", fill: "#4a5260", fontSize: 9 }} />
+                          <YAxis tick={{ fill: "#4a5260", fontSize: 9 }} domain={[0, 30]} unit="%" width={35} />
+                          <Tooltip contentStyle={{ background: "#0c0c18", border: "1px solid #1e1e38", fontSize: 11 }}
+                            formatter={(v, n) => [n === "winRate" ? `${v}%` : `$${v}`, n === "winRate" ? "Win Rate" : "P&L"]} />
+                          <Area type="monotone" dataKey="winRate" stroke="#00bfff" strokeWidth={2} fill="url(#gWR)" dot={false} isAnimationActive={false} />
+                          {/* Break-even reference line at 11.1% */}
+                          <Area type="monotone" dataKey={() => 11.1} stroke="#ff3366" strokeWidth={1} strokeDasharray="4 4" fill="none" dot={false} isAnimationActive={false} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                      <div style={{ fontSize: 10, color: "var(--red)", marginTop: 4 }}>— Break-even line (11.1% win rate). Stay above this to be profitable.</div>
+                    </div>
+                  )}
+
+                  {/* MARKET SNAPSHOT */}
+                  <div className="panel">
+                    <div className="panel-title"><span className="dot dot-yellow" />Live Market Snapshot — {symbol}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+                      {evenOdd && (
+                        <div style={{ padding: "10px", background: "var(--bg2)", borderRadius: 3, border: "1px solid var(--border)" }}>
+                          <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, marginBottom: 6 }}>EVEN/ODD</div>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--cyan)" }}>{evenOdd.evenPct}% E</div>
+                          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{evenOdd.streak}× {evenOdd.streakType}</div>
+                        </div>
+                      )}
+                      {riseFall && (
+                        <div style={{ padding: "10px", background: "var(--bg2)", borderRadius: 3, border: "1px solid var(--border)" }}>
+                          <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, marginBottom: 6 }}>RISE/FALL</div>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: riseFall.streakType === "RISE" ? "var(--green)" : "var(--red)" }}>
+                            {riseFall.streak}× {riseFall.streakType}
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{((riseFall.rises/(riseFall.rises+riseFall.falls||1))*100).toFixed(0)}% rises</div>
+                        </div>
+                      )}
+                      {overUnder && (
+                        <div style={{ padding: "10px", background: "var(--bg2)", borderRadius: 3, border: "1px solid var(--border)" }}>
+                          <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, marginBottom: 6 }}>OVER/UNDER {barrier}</div>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--yellow)" }}>{overUnder.overPct}% O</div>
+                          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{overUnder.underPct}% under</div>
+                        </div>
+                      )}
+                      {predictTopPick && (
+                        <div style={{ padding: "10px", background: "var(--bg2)", borderRadius: 3, border: "1px solid var(--border)" }}>
+                          <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, marginBottom: 6 }}>TOP DIGIT</div>
+                          <div style={{ fontSize: 24, fontWeight: 700, color: "var(--green)", fontFamily: "var(--head)" }}>{predictTopPick.digit}</div>
+                          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>gap: {predictTopPick.gap} ticks</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+
           {/* ── PREDICT TAB ── */}
           {activeTab === "predict" && digits.length >= 20 && predictTopPick && (
             <>
@@ -1428,8 +1731,8 @@ export default function DerivOracle() {
 
           {/* PHASE 2 TEASER */}
           <div className="phase2-banner">
-            <div className="phase2-title">⚙ PHASE 3 — ONE-CLICK TRADE EXECUTION + XML BOT ANALYZER [COMING SOON]</div>
-            <div className="phase2-sub">Buy contracts directly · Upload Deriv bot XML files · Strategy matching · Bot health checker</div>
+            <div className="phase2-title">⚙ PHASE 3 — XML BOT ANALYZER + ONE-CLICK TRADE EXECUTION [COMING SOON]</div>
+            <div className="phase2-sub">Upload Deriv bot XML files · Auto-detect strategy · Bot health check · Buy contracts directly from dashboard</div>
           </div>
 
         </div>
