@@ -91,6 +91,75 @@ function getHotCold(freq) {
   return { hot: sorted.slice(0, 3).map(x => x.digit), cold: sorted.slice(-3).map(x => x.digit) };
 }
 
+// ── PREDICTION ENGINE HELPERS ─────────────────────────────────────────────────
+function getDigitGaps(digits) {
+  const gaps = Array(10).fill(null);
+  for (let i = digits.length - 1; i >= 0; i--) {
+    const d = digits[i];
+    if (gaps[d] === null) gaps[d] = digits.length - 1 - i;
+  }
+  return gaps.map((g, i) => ({ digit: i, gap: g === null ? digits.length : g }));
+}
+function getDigitZScores(digits) {
+  const n = digits.length;
+  if (n < 10) return Array(10).fill(0).map((_, i) => ({ digit: i, z: 0 }));
+  const freq = Array(10).fill(0);
+  digits.forEach(d => freq[d]++);
+  const expected = n * 0.1;
+  const stddev = Math.sqrt(n * 0.1 * 0.9);
+  return freq.map((count, digit) => ({ digit, z: parseFloat(((count - expected) / stddev).toFixed(2)) }));
+}
+function getRecencyScore(digits) {
+  const n = digits.length;
+  const scores = Array(10).fill(0);
+  digits.forEach((d, i) => {
+    const age = n - i;
+    const weight = age <= 10 ? 3 : age <= 30 ? 2 : 1;
+    scores[d] += weight;
+  });
+  const max = Math.max(...scores, 1);
+  return predictScores.map((s, i) => ({ digit: i, score: parseFloat((s / max * 100).toFixed(1)) }));
+}
+function getTransitionMatrix(digits) {
+  const matrix = Array(10).fill(null).map(() => Array(10).fill(0));
+  for (let i = 0; i < digits.length - 1; i++) matrix[digits[i]][digits[i + 1]]++;
+  return matrix;
+}
+function getPredictionScores(digits) {
+  if (digits.length < 20) return null;
+  const gaps = getDigitGaps(digits);
+  const zScores = getDigitZScores(digits);
+  const recency = getRecencyScore(digits);
+  const freq = getDigitFrequency(digits);
+  const maxGap = Math.max(...gaps.map(g => g.gap), 1);
+  return Array(10).fill(0).map((_, digit) => {
+    const z = zScores[digit].z;
+    const zSignal = Math.min(100, Math.max(0, 50 - (z * 15)));
+    const gap = gaps[digit].gap;
+    const gapSignal = Math.min(100, (gap / maxGap) * 100);
+    const rec = recency[digit].score;
+    const recSignal = Math.max(0, 100 - rec);
+    const actualPct = parseFloat(freq[digit].pct);
+    const freqSignal = Math.min(100, Math.max(0, 50 + ((10 - actualPct) * 5)));
+    const combined = zSignal*0.30 + gapSignal*0.35 + recSignal*0.20 + freqSignal*0.15;
+    const winProb = 0.10 + (combined / 1000);
+    const b = 8;
+    const q = 1 - winProb;
+    const kelly = Math.max(0, ((b * winProb - q) / b));
+    return {
+      digit,
+      confidence: parseFloat(combined.toFixed(1)),
+      gap,
+      z,
+      recScore: rec,
+      winProb: parseFloat((winProb * 100).toFixed(1)),
+      halfKelly: parseFloat((kelly / 2 * 100).toFixed(1)),
+      signal: combined >= 70 ? "STRONG" : combined >= 55 ? "MODERATE" : combined >= 40 ? "WEAK" : "AVOID",
+    };
+  }).sort((a, b) => b.confidence - a.confidence);
+}
+
+
 // ── AI ANALYSIS ───────────────────────────────────────────────────────────────
 async function fetchAIInsight(stats, ticks, symbol) {
   const digits = getLastDigits(ticks.slice(-20));
@@ -312,6 +381,43 @@ const css = `
   .balance-currency{font-size:10px;color:var(--text-dim);letter-spacing:2px;}
   /* Connection log */
   .conn-log{font-size:10px;color:var(--text-dim);margin-top:8px;height:18px;overflow:hidden;}
+
+  /* Paper Trading */
+  .pt-table{width:100%;border-collapse:collapse;font-size:11px;}
+  .pt-table th{color:var(--text-dim);letter-spacing:2px;font-size:9px;text-transform:uppercase;
+    padding:6px 8px;border-bottom:1px solid var(--border);text-align:left;}
+  .pt-table td{padding:6px 8px;border-bottom:1px solid var(--border);font-family:var(--mono);}
+  .pt-win{color:var(--green);} .pt-loss{color:var(--red);} .pt-pending{color:var(--yellow);}
+  .pred-card{padding:10px 8px;border:1px solid var(--border);border-radius:3px;
+    display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;
+    transition:all 0.2s;position:relative;}
+  .pred-card:hover{border-color:var(--green);background:var(--green-dim);}
+  .pred-card.top-pick{border-color:var(--green);background:var(--green-dim);
+    box-shadow:0 0 12px rgba(0,255,136,0.2);}
+  .pred-card.strong{border-color:var(--orange);background:var(--orange-dim);}
+  .pred-card.avoid{opacity:0.4;}
+  .pred-digit{font-size:22px;font-weight:700;font-family:var(--head);}
+  .pred-conf{font-size:10px;font-weight:700;letter-spacing:1px;}
+  .pred-gap{font-size:9px;color:var(--text-dim);}
+  .pred-signal{font-size:8px;letter-spacing:2px;padding:2px 6px;border-radius:2px;text-transform:uppercase;}
+  .sig-strong{background:var(--green-dim);color:var(--green);border:1px solid var(--green);}
+  .sig-moderate{background:var(--orange-dim);color:var(--orange);border:1px solid var(--orange);}
+  .sig-weak{background:var(--yellow-dim);color:var(--yellow);border:1px solid var(--yellow);}
+  .sig-avoid{background:var(--red-dim);color:var(--red);border:1px solid var(--red);}
+  .matrix-grid{display:grid;grid-template-columns:repeat(11,1fr);gap:2px;font-size:9px;}
+  .matrix-cell{padding:4px 2px;text-align:center;border-radius:2px;}
+  .matrix-header{color:var(--text-dim);font-weight:700;}
+  .progress-ring{display:flex;flex-direction:column;align-items:center;gap:4px;}
+  .target-bar{height:8px;background:var(--border);border-radius:4px;overflow:hidden;margin:4px 0;}
+  .target-fill{height:100%;border-radius:4px;transition:width 0.6s ease;
+    background:linear-gradient(90deg,var(--orange),var(--green));}
+  .kelly-input{width:80px;background:#05050a;border:1px solid var(--border2);
+    color:var(--green);font-family:var(--mono);font-size:13px;
+    padding:5px 8px;border-radius:3px;outline:none;text-align:center;}
+  .kelly-input:focus{border-color:var(--green);}
+  .pnl-positive{color:var(--green);font-weight:700;}
+  .pnl-negative{color:var(--red);font-weight:700;}
+
   @media(max-width:900px){
     .grid-top,.grid-2,.grid-3{grid-template-columns:1fr;}
     .symbol-bar{gap:4px;}
@@ -344,6 +450,16 @@ export default function DerivOracle() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [autoAI, setAutoAI] = useState(false);
   const [tickCount, setTickCount] = useState(0);
+
+  // ── PAPER TRADING STATE ───────────────────────────────────────────────────
+  const [paperTrades, setPaperTrades] = useState([]);
+  const [pendingTrade, setPendingTrade] = useState(null); // { digit, confidence, tickIndex }
+  const [paperBalance, setPaperBalance] = useState(1000); // virtual $1000
+  const [paperStake, setPaperStake] = useState(10);
+  const [paperPayout] = useState(8); // 8:1 for Matches
+  const paperTradesRef = useRef([]);
+  const pendingTradeRef = useRef(null);
+  const tickIndexRef = useRef(0);
 
   const wsRef = useRef(null);
   const ticksRef = useRef([]);
@@ -454,7 +570,23 @@ export default function DerivOracle() {
         setTicks([...updated]);
         setDigits(getLastDigits(updated));
         setTickCount(c => c + 1);
+        tickIndexRef.current += 1;
         setWsStatus("live");
+
+        // ── PAPER TRADE RESOLVER ──────────────────────────────────────────
+        if (pendingTradeRef.current) {
+          const pt = pendingTradeRef.current;
+          const actualDigit = parseInt(parseFloat(price).toFixed(2).slice(-1));
+          const won = actualDigit === pt.digit;
+          const pnl = won ? pt.stake * pt.payout : -pt.stake;
+          const resolved = { ...pt, result: won ? "WIN" : "LOSS", actualDigit, pnl, resolvedAt: tickIndexRef.current };
+          const updatedTrades = [...paperTradesRef.current, resolved];
+          paperTradesRef.current = updatedTrades;
+          setPaperTrades([...updatedTrades]);
+          setPaperBalance(b => parseFloat((b + pnl).toFixed(2)));
+          pendingTradeRef.current = null;
+          setPendingTrade(null);
+        }
 
         // Auto AI every 25 new ticks
         aiCounterRef.current += 1;
@@ -519,6 +651,47 @@ export default function DerivOracle() {
 
   // Symbol change — reconnect if already live
   useEffect(() => { wsStatusRef.current = wsStatus; }, [wsStatus]);
+  useEffect(() => { paperTradesRef.current = paperTrades; }, [paperTrades]);
+  useEffect(() => { pendingTradeRef.current = pendingTrade; }, [pendingTrade]);
+
+  // ── PAPER TRADE LOGGER ────────────────────────────────────────────────────
+  const logPaperTrade = useCallback((digit, confidence, winProb, halfKelly) => {
+    if (pendingTradeRef.current) return; // one trade at a time
+    const autoStake = parseFloat((paperBalance * halfKelly / 100).toFixed(2));
+    const stake = Math.max(1, Math.min(autoStake, paperBalance * 0.2)); // cap at 20% bankroll
+    const trade = {
+      id: Date.now(),
+      digit,
+      confidence,
+      winProb,
+      stake: parseFloat(paperStake || stake),
+      payout: paperPayout,
+      symbol,
+      placedAt: tickIndexRef.current,
+      result: "PENDING",
+      actualDigit: null,
+      pnl: 0,
+    };
+    pendingTradeRef.current = trade;
+    setPendingTrade(trade);
+  }, [paperBalance, paperStake, paperPayout, symbol]);
+
+  // Paper trading computed stats
+  const ptStats = (() => {
+    const resolved = paperTrades.filter(t => t.result !== "PENDING");
+    const wins = resolved.filter(t => t.result === "WIN");
+    const totalPnl = resolved.reduce((s, t) => s + t.pnl, 0);
+    const winRate = resolved.length ? ((wins.length / resolved.length) * 100).toFixed(1) : "0.0";
+    const avgConf = resolved.length ? (resolved.reduce((s, t) => s + t.confidence, 0) / resolved.length).toFixed(1) : "0.0";
+    const targetMet = resolved.length >= 200 && parseFloat(winRate) >= 12;
+    return { total: resolved.length, wins: wins.length, losses: resolved.length - wins.length, winRate, totalPnl: totalPnl.toFixed(2), avgConf, targetMet };
+  })();
+
+  // Predict tab derived values (computed here to avoid IIFE in JSX)
+  const predictScores = digits.length >= 20 ? (getPredictionScores(digits) || []) : [];
+  const predictTopPick = predictScores[0] || null;
+  const predictMatrix = digits.length >= 20 ? getTransitionMatrix(digits) : null;
+  const predictLastDigit = digits.length > 0 ? digits[digits.length - 1] : null;
 
   const handleSymbolChange = useCallback((sym) => {
     setSymbol(sym);
@@ -669,7 +842,7 @@ export default function DerivOracle() {
           {/* TABS */}
           {ticks.length > 0 && (
             <div className="tabs">
-              {[["overview","Overview"],["evenodd","Even/Odd"],["risefall","Rise/Fall"],["matchdiffer","Matches/Differs"],["overunder","Over/Under"]].map(([id, label]) => (
+              {[["overview","Overview"],["evenodd","Even/Odd"],["risefall","Rise/Fall"],["matchdiffer","Matches/Differs"],["overunder","Over/Under"],["predict","🎯 Predict"],["papertrade","📋 Paper Trade"]].map(([id, label]) => (
                 <button key={id} className={`tab ${activeTab === id ? "active" : ""}`} onClick={() => setActiveTab(id)}>{label}</button>
               ))}
             </div>
@@ -1013,6 +1186,231 @@ export default function DerivOracle() {
                 </ResponsiveContainer>
               </div>
             </div>
+          )}
+
+
+          {/* ── PREDICT TAB ── */}
+          {activeTab === "predict" && digits.length >= 20 && predictTopPick && (
+            <>
+                {/* TOP PICK BANNER */}
+                <div className="panel" style={{ marginBottom: 12, border: "1px solid var(--green)", background: "rgba(0,255,136,0.04)" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+                    <div>
+                      <div className="panel-title" style={{ marginBottom: 4 }}><span className="dot dot-green" />Top Prediction — Matches</div>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+                        <span style={{ fontSize: 56, fontWeight: 700, color: "var(--green)", fontFamily: "var(--head)", lineHeight: 1 }}>{predictTopPick?.digit}</span>
+                        <div>
+                          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>CONFIDENCE</div>
+                          <div style={{ fontSize: 24, fontWeight: 700, color: "var(--green)" }}>{predictTopPick?.confidence}%</div>
+                          <div className={`pred-signal sig-${predictTopPick?.signal?.toLowerCase()}`}>{predictTopPick?.signal}</div>
+                        </div>
+                        <div style={{ marginLeft: 16 }}>
+                          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>GAP (ticks since seen)</div>
+                          <div style={{ fontSize: 20, fontWeight: 700, color: "var(--yellow)" }}>{predictTopPick?.gap}</div>
+                          <div style={{ fontSize: 10, color: "var(--text-dim)" }}>Z-SCORE: {predictTopPick?.z}</div>
+                        </div>
+                        <div style={{ marginLeft: 16 }}>
+                          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>EST. WIN PROB</div>
+                          <div style={{ fontSize: 20, fontWeight: 700, color: "var(--cyan)" }}>{predictTopPick?.winProb}%</div>
+                          <div style={{ fontSize: 10, color: "var(--text-dim)" }}>BREAK-EVEN: 11.1%</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: 10, color: "var(--text-dim)", marginBottom: 6 }}>KELLY STAKE (half-Kelly)</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: "var(--orange)" }}>{predictTopPick?.halfKelly}% of bankroll</div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+                        <span style={{ fontSize: 11, color: "var(--text-dim)" }}>Balance $</span>
+                        <input className="kelly-input" type="number" value={paperBalance} readOnly />
+                        <span style={{ fontSize: 13, color: "var(--green)" }}>→ ${(paperBalance * (predictTopPick?.halfKelly || 0) / 100).toFixed(2)}</span>
+                      </div>
+                      <button className="btn btn-green" style={{ marginTop: 8 }}
+                        onClick={() => { setActiveTab("papertrade"); logPaperTrade(predictTopPick.digit, predictTopPick.confidence, predictTopPick.winProb, predictTopPick.halfKelly); }}>
+                        📋 Log Paper Trade
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ALL DIGIT SCORES */}
+                <div className="panel" style={{ marginBottom: 12 }}>
+                  <div className="panel-title"><span className="dot dot-green" />All Digit Confidence Scores — Click Any to Log Paper Trade</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(10, 1fr)", gap: 6 }}>
+                    {predictScores.map((s, rank) => (
+                      <div key={s.digit}
+                        className={`pred-card ${rank === 0 ? "top-pick" : s.signal === "STRONG" ? "strong" : s.signal === "AVOID" ? "avoid" : ""}`}
+                        onClick={() => { setActiveTab("papertrade"); logPaperTrade(s.digit, s.confidence, s.winProb, s.halfKelly); }}>
+                        {rank === 0 && <div style={{ position: "absolute", top: 3, right: 3, fontSize: 8, color: "var(--green)" }}>★TOP</div>}
+                        <div className={`pred-digit ${rank === 0 ? "green" : s.signal === "STRONG" ? "orange" : s.signal === "AVOID" ? "red" : "yellow"}`}>{s.digit}</div>
+                        <div className={`pred-conf ${rank === 0 ? "green" : "dim"}`}>{s.confidence}%</div>
+                        <div className="pred-gap">gap:{s.gap}</div>
+                        <div className="pred-gap">z:{s.z}</div>
+                        <div className={`pred-signal sig-${s.signal.toLowerCase()}`}>{s.signal}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* TRANSITION MATRIX */}
+                <div className="panel">
+                  <div className="panel-title"><span className="dot dot-cyan" />Transition Matrix — After digit X, what comes next? (last digit: <span className="green">{predictLastDigit}</span>)</div>
+                  <div className="matrix-grid" style={{ overflowX: "auto" }}>
+                    <div className="matrix-cell matrix-header">→</div>
+                    {[0,1,2,3,4,5,6,7,8,9].map(d => <div key={d} className="matrix-cell matrix-header" style={{ color: "var(--cyan)" }}>{d}</div>)}
+                    {[0,1,2,3,4,5,6,7,8,9].map(from => {
+                      const rowTotal = predictMatrix[from].reduce((s,v) => s+v, 0) || 1;
+                      return [
+                        <div key={`h${from}`} className="matrix-cell matrix-header" style={{ color: "var(--orange)" }}>{from}</div>,
+                        ...predictMatrix[from].map((count, to) => {
+                          const pct = Math.round((count / rowTotal) * 100);
+                          const intensity = Math.min(1, pct / 25);
+                          const bg = from === predictLastDigit
+                            ? `rgba(0,255,136,${intensity * 0.6})`
+                            : `rgba(0,191,255,${intensity * 0.3})`;
+                          return <div key={`${from}-${to}`} className="matrix-cell" style={{ background: bg, color: pct > 15 ? "var(--green)" : "var(--text-dim)", fontSize: 9 }}>{pct}%</div>;
+                        })
+                      ];
+                    })}
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--text-dim)", marginTop: 8 }}>
+                    Highlighted row = after last digit {predictLastDigit}. Brighter cell = higher transition probability.
+                  </div>
+                </div>
+            </>
+          )}
+          {activeTab === "predict" && digits.length < 20 && (
+            <div className="panel"><div className="empty-state">Need at least 20 ticks to generate predictions. Connect live or load demo data.</div></div>
+          )}
+
+          {/* ── PAPER TRADE TAB ── */}
+          {activeTab === "papertrade" && (
+            <>
+              {/* Summary stats */}
+              <div className="grid-3" style={{ marginBottom: 12 }}>
+                <div className="panel">
+                  <div className="panel-title"><span className="dot dot-green" />Session P&amp;L</div>
+                  <div style={{ fontSize: 32, fontWeight: 700, fontFamily: "var(--head)" }} className={parseFloat(ptStats.totalPnl) >= 0 ? "pnl-positive" : "pnl-negative"}>
+                    {parseFloat(ptStats.totalPnl) >= 0 ? "+" : ""}${ptStats.totalPnl}
+                  </div>
+                  <div className="stat-row" style={{ marginTop: 8 }}>
+                    <span className="stat-label">Virtual Balance</span>
+                    <span className="stat-val green">${paperBalance.toFixed(2)}</span>
+                  </div>
+                  <div className="stat-row">
+                    <span className="stat-label">Started With</span>
+                    <span className="stat-val dim">$1000.00</span>
+                  </div>
+                </div>
+                <div className="panel">
+                  <div className="panel-title"><span className="dot dot-cyan" />Win Rate Tracker</div>
+                  <div style={{ fontSize: 32, fontWeight: 700, fontFamily: "var(--head)" }} className={parseFloat(ptStats.winRate) >= 12 ? "green" : parseFloat(ptStats.winRate) >= 10 ? "yellow" : "red"}>
+                    {ptStats.winRate}%
+                  </div>
+                  <div className="stat-row" style={{ marginTop: 8 }}>
+                    <span className="stat-label">Target</span>
+                    <span className="stat-val cyan">&gt;12% over 200 trades</span>
+                  </div>
+                  <div className="stat-row">
+                    <span className="stat-label">Trades</span>
+                    <span className="stat-val">{ptStats.wins}W / {ptStats.losses}L / {ptStats.total} total</span>
+                  </div>
+                  {pendingTrade && (
+                    <div style={{ marginTop: 8, padding: "6px 10px", background: "var(--yellow-dim)", border: "1px solid var(--yellow)", borderRadius: 3, fontSize: 11 }}>
+                      <span className="yellow">⏳ PENDING: Digit {pendingTrade.digit} | ${pendingTrade.stake} stake</span>
+                    </div>
+                  )}
+                </div>
+                <div className="panel">
+                  <div className="panel-title"><span className="dot dot-orange" />Go-Live Target Progress</div>
+                  <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 6 }}>200 trades at &gt;12% win rate</div>
+                  <div className="target-bar">
+                    <div className="target-fill" style={{ width: `${Math.min(100, (ptStats.total / 200) * 100)}%` }} />
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{ptStats.total}/200 trades</div>
+                  <div className="target-bar" style={{ marginTop: 8 }}>
+                    <div className="target-fill" style={{ width: `${Math.min(100, (parseFloat(ptStats.winRate) / 12) * 100)}%`, background: parseFloat(ptStats.winRate) >= 12 ? "var(--green)" : "var(--orange)" }} />
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{ptStats.winRate}% / 12% target win rate</div>
+                  {ptStats.targetMet && (
+                    <div style={{ marginTop: 8, padding: "8px", background: "var(--green-dim)", border: "1px solid var(--green)", borderRadius: 3, fontSize: 11, color: "var(--green)", textAlign: "center", letterSpacing: 2 }}>
+                      🟢 TARGET MET — READY FOR LIVE TRADING
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Stake config */}
+              <div className="panel" style={{ marginBottom: 12 }}>
+                <div className="panel-title"><span className="dot dot-yellow" />Paper Trade Settings</div>
+                <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
+                  <div>
+                    <div style={{ fontSize: 10, color: "var(--text-dim)", marginBottom: 4 }}>STAKE PER TRADE ($)</div>
+                    <input className="kelly-input" type="number" min="1" max="200" value={paperStake}
+                      onChange={e => setPaperStake(parseFloat(e.target.value) || 10)} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, color: "var(--text-dim)", marginBottom: 4 }}>PAYOUT RATIO</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: "var(--green)" }}>8 : 1</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, color: "var(--text-dim)", marginBottom: 4 }}>BREAK-EVEN WIN RATE</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: "var(--orange)" }}>11.1%</div>
+                  </div>
+                  <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                    <button className="btn btn-cyan" onClick={() => setActiveTab("predict")}>🎯 Go to Predict</button>
+                    <button className="btn btn-ghost" onClick={() => { setPaperTrades([]); paperTradesRef.current = []; setPaperBalance(1000); setPendingTrade(null); pendingTradeRef.current = null; }}>↺ Reset</button>
+                    <button className="btn btn-orange" onClick={() => {
+                      const csv = ["ID,Digit,Confidence,WinProb,Stake,Result,ActualDigit,PnL,Symbol",
+                        ...paperTrades.map(t => `${t.id},${t.digit},${t.confidence},${t.winProb},${t.stake},${t.result},${t.actualDigit},${t.pnl},${t.symbol}`)
+                      ].join("
+");
+                      const blob = new Blob([csv], { type: "text/csv" });
+                      const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+                      a.download = `paper_trades_${symbol}_${Date.now()}.csv`; a.click();
+                    }}>⬇ Export CSV</button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Trade log */}
+              <div className="panel">
+                <div className="panel-title"><span className="dot dot-orange" />Trade Log — {paperTrades.length} entries</div>
+                {paperTrades.length === 0 ? (
+                  <div className="empty-state" style={{ padding: "24px" }}>
+                    No paper trades yet. Go to <span className="green">🎯 Predict</span> tab and click a digit card to log a trade.
+                  </div>
+                ) : (
+                  <div style={{ overflowX: "auto", maxHeight: 400, overflowY: "auto" }}>
+                    <table className="pt-table">
+                      <thead>
+                        <tr>
+                          <th>#</th><th>DIGIT</th><th>CONF%</th><th>WIN%</th>
+                          <th>STAKE</th><th>RESULT</th><th>ACTUAL</th><th>P&amp;L</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...paperTrades].reverse().map((t, i) => (
+                          <tr key={t.id}>
+                            <td className="dim">{paperTrades.length - i}</td>
+                            <td style={{ color: "var(--cyan)", fontWeight: 700 }}>{t.digit}</td>
+                            <td className="yellow">{t.confidence}%</td>
+                            <td className="dim">{t.winProb}%</td>
+                            <td>${t.stake}</td>
+                            <td className={t.result === "WIN" ? "pt-win" : t.result === "LOSS" ? "pt-loss" : "pt-pending"}>
+                              {t.result === "WIN" ? "✓ WIN" : t.result === "LOSS" ? "✗ LOSS" : "⏳ PENDING"}
+                            </td>
+                            <td style={{ color: "var(--text-dim)" }}>{t.actualDigit ?? "—"}</td>
+                            <td className={t.pnl > 0 ? "pnl-positive" : t.pnl < 0 ? "pnl-negative" : "dim"}>
+                              {t.pnl > 0 ? "+" : ""}{t.pnl !== 0 ? `$${t.pnl.toFixed(2)}` : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </>
           )}
 
           {/* EMPTY STATE */}
