@@ -813,9 +813,73 @@ async function generateImprovedBot(originalXml, marketContext, analysisReport) {
   });
 
   // Single combined prompt — format-educated with real Deriv DBot structure
-  const FORMAT_GUIDE = '<xml xmlns=\\"http://www.w3.org/1999/xhtml\\" collection=\\"false\\">\\n  <variables>\\n    <variable type=\\"\\" id=\\"VAR_ID_1\\">STOP_LOSS</variable>\\n    <variable type=\\"\\" id=\\"VAR_ID_2\\">TARGET_PROFIT</variable>\\n    <variable type=\\"\\" id=\\"VAR_ID_3\\">INITIAL_STAKE</variable>\\n    <variable type=\\"\\" id=\\"VAR_ID_4\\">MARTINGALE</variable>\\n    <variable type=\\"\\" id=\\"VAR_ID_5\\">PREDICTION</variable>\\n  </variables>\\n  <block type=\\"trade\\" id=\\"TRADE_ID\\" x=\\"0\\" y=\\"0\\">\\n    <field name=\\"MARKET_LIST\\">synthetic_index</field>\\n    <field name=\\"SUBMARKET_LIST\\">random_index</field>\\n    <field name=\\"SYMBOL_LIST\\">R_100</field>\\n    <field name=\\"TRADETYPECAT_LIST\\">digits</field>\\n    <field name=\\"TRADETYPE_LIST\\">matchesdiffers</field>\\n    <field name=\\"TYPE_LIST\\">DIGITDIFF</field>\\n    <field name=\\"CANDLEINTERVAL_LIST\\">60</field>\\n    <field name=\\"TIME_MACHINE_ENABLED\\">FALSE</field>\\n    <field name=\\"RESTARTONERROR\\">TRUE</field>\\n    <statement name=\\"INITIALIZATION\\">\\n      <!-- variables_set blocks for each parameter -->\\n    </statement>\\n    <statement name=\\"SUBMARKET\\">\\n      <block type=\\"controls_whileUntil\\" id=\\"LOOP_ID\\">\\n        <field name=\\"MODE\\">WHILE</field>\\n        <value name=\\"BOOL\\"><block type=\\"logic_boolean\\" id=\\"B1\\"><field name=\\"BOOL\\">TRUE</field></block></value>\\n        <statement name=\\"DO\\">\\n          <!-- tick analysis and trade logic goes here -->\\n        </statement>\\n      </block>\\n    </statement>\\n  </block>\\n  <block type=\\"before_purchase\\" id=\\"BEFORE_ID\\" x=\\"0\\" y=\\"820\\">\\n    <statement name=\\"BEFOREPURCHASE_STACK\\">\\n      <block type=\\"purchase\\" id=\\"P1\\"><field name=\\"PURCHASE_LIST\\">DIGITDIFF</field></block>\\n    </statement>\\n  </block>\\n  <block type=\\"after_purchase\\" id=\\"AFTER_ID\\" x=\\"0\\" y=\\"900\\">\\n    <statement name=\\"AFTERPURCHASE_STACK\\">\\n      <!-- win/loss logic: contract_check_result, trade_again, stop conditions -->\\n    </statement>\\n  </block>\\n</xml>';
+  const FORMAT_GUIDE = [
+    '<xml xmlns="http://www.w3.org/1999/xhtml" collection="false">',
+    '  <variables>',
+    '    <variable type="" id="VAR1">STOP_LOSS</variable>',
+    '    <variable type="" id="VAR2">TARGET_PROFIT</variable>',
+    '    <variable type="" id="VAR3">INITIAL_STAKE</variable>',
+    '    <variable type="" id="VAR4">MARTINGALE</variable>',
+    '    <variable type="" id="VAR5">PREDICTION</variable>',
+    '  </variables>',
+    '  <block type="trade" id="TRADE1" x="0" y="0">',
+    '    <field name="MARKET_LIST">synthetic_index</field>',
+    '    <field name="SUBMARKET_LIST">random_index</field>',
+    '    <field name="SYMBOL_LIST">1HZ100V</field>',
+    '    <field name="TRADETYPECAT_LIST">digits</field>',
+    '    <field name="TRADETYPE_LIST">matchesdiffers</field>',
+    '    <field name="TYPE_LIST">DIGITDIFF</field>',
+    '    <field name="CANDLEINTERVAL_LIST">60</field>',
+    '    <field name="TIME_MACHINE_ENABLED">FALSE</field>',
+    '    <field name="RESTARTONERROR">TRUE</field>',
+    '    <statement name="INITIALIZATION">',
+    '      <!-- variables_set blocks for each parameter go here -->',
+    '    </statement>',
+    '    <statement name="SUBMARKET">',
+    '      <block type="controls_whileUntil" id="LOOP1">',
+    '        <field name="MODE">WHILE</field>',
+    '        <value name="BOOL"><block type="logic_boolean" id="B1"><field name="BOOL">TRUE</field></block></value>',
+    '        <statement name="DO">',
+    '          <!-- trade conditions and tradeOptions block go here -->',
+    '        </statement>',
+    '      </block>',
+    '    </statement>',
+    '  </block>',
+    '  <block type="before_purchase" id="BEFORE1" x="0" y="820">',
+    '    <statement name="BEFOREPURCHASE_STACK">',
+    '      <block type="purchase" id="P1"><field name="PURCHASE_LIST">DIGITDIFF</field></block>',
+    '    </statement>',
+    '  </block>',
+    '  <block type="after_purchase" id="AFTER1" x="0" y="900">',
+    '    <statement name="AFTERPURCHASE_STACK">',
+    '      <!-- if win: reset stake, trade_again. if loss: martingale or stop -->',
+    '    </statement>',
+    '  </block>',
+    '</xml>',
+  ].join("\n");
 
-  const fullPrompt = "You are a Deriv DBot XML expert. Your ONLY output must be a complete, valid Deriv DBot XML file that can be imported into bot.deriv.com without errors.\\n\\nCRITICAL FORMAT RULES (violation = bot breaks on import):\\n1. Root element MUST be: <xml xmlns=\\"http://www.w3.org/1999/xhtml\\" collection=\\"false\\">\\n2. REQUIRED top-level blocks (all must be present):\\n   - <block type=\\"trade\\"> — main trade loop\\n   - <block type=\\"before_purchase\\"> — must contain <block type=\\"purchase\\">\\n   - <block type=\\"after_purchase\\"> — win/loss handling\\n3. Every <block> must have a unique id=\\\"...\\\" attribute\\n4. Variables must be declared in <variables> section with matching id references\\n5. NO <?xml ?> processing instruction — start directly with <xml\\n6. NO markdown, NO code fences, NO explanations outside XML comments\\n7. Use <!-- comment --> to explain improvements\\n\\n=== VALID FORMAT SKELETON (follow this structure exactly) ===\\n" + FORMAT_GUIDE + "\\n\\n=== ORIGINAL BOT XML (excerpt to improve) ===\\n" + xmlSnippet + "\\n\\n=== LIVE MARKET ANALYSIS ===\\n" + reportSnippet + "\\n\\n=== MARKET STATS ===\\n" + ctxStr + "\\n\\nIMPROVEMENT INSTRUCTIONS:\\n- Symbol: use 1HZ100V (Volatility 100 1s) for best DIFFERS edge\\n- TRADETYPE_LIST: matchesdiffers, TYPE_LIST: DIGITDIFF, PURCHASE_LIST: DIGITDIFF\\n- Initial stake: $10 (flat, no martingale for validation phase)\\n- PREDICTION: use coldest digit from market data (least frequent = best DIFFERS target)\\n- Stop loss: $50, Take profit: $100\\n- Add after_purchase logic: check contract_check_result win/loss, call trade_again or stop\\n- All block id values must be unique strings\\n\\nOutput the complete improved XML now:";
+  const RULES = [
+    "Root: <xml xmlns=\"http://www.w3.org/1999/xhtml\" collection=\"false\"> (NO <?xml ?> header)",
+    "Required blocks: trade, before_purchase (with purchase child), after_purchase",
+    "Every <block> needs unique id= attribute",
+    "Variables declared in <variables> with matching variabletype= references",
+    "No markdown, no code fences — raw XML only",
+    "Symbol: 1HZ100V, TRADETYPE_LIST: matchesdiffers, TYPE_LIST: DIGITDIFF",
+    "PURCHASE_LIST: DIGITDIFF in before_purchase block",
+    "Use <!-- comment --> to explain each improvement made",
+  ].join("\n");
+
+  const fullPrompt = "You are a Deriv DBot XML expert. Output ONLY a complete valid Deriv DBot XML."
+    + "\n\n=== MANDATORY FORMAT RULES ===\n" + RULES
+    + "\n\n=== VALID STRUCTURE SKELETON ===\n" + FORMAT_GUIDE
+    + "\n\n=== ORIGINAL BOT XML (excerpt) ===\n" + xmlSnippet
+    + "\n\n=== LIVE MARKET DATA ===\n" + reportSnippet
+    + "\n\n=== MARKET STATS ===\n" + ctxStr
+    + "\n\nIMPROVEMENT TASKS: flat $10 stake, no martingale, stop_loss=$50, take_profit=$100,"
+    + " PREDICTION=coldest digit from hot/cold data, symbol=1HZ100V."
+    + "\n\nOutput the complete improved XML now (start with <xml):";
+
+
 
   const makeORRequest = async (key, model) => {
     const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
