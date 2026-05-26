@@ -593,6 +593,264 @@ const css = `
   }
 `;
 
+
+// ── BOT XML PARSER ────────────────────────────────────────────────────────────
+function parseBotXML(xmlString) {
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xmlString, "text/xml");
+    const getAttr = (tag, attr) => {
+      const el = doc.querySelector(tag);
+      return el ? el.getAttribute(attr) : null;
+    };
+    const getField = (tag) => {
+      const el = doc.querySelector(tag);
+      return el ? el.textContent.trim() : null;
+    };
+    // Contract type detection
+    const contractType = getAttr("trade_type", "type") ||
+      getField("contract_type") ||
+      (xmlString.includes("DIGITDIFF") ? "DIGITDIFF" :
+       xmlString.includes("DIGITMATCH") ? "DIGITMATCH" :
+       xmlString.includes("CALL") ? "CALL" :
+       xmlString.includes("PUT") ? "PUT" :
+       xmlString.includes("EVEN") ? "EVEN" :
+       xmlString.includes("ODD") ? "ODD" : "UNKNOWN");
+    // Extract key parameters using regex for Deriv XML bot format
+    const extract = (key) => {
+      const m = xmlString.match(new RegExp(key + '[^>]*>([^<]+)<', 'i')) ||
+                xmlString.match(new RegExp('"' + key + '"[^>]*value="([^"]+)"', 'i')) ||
+                xmlString.match(new RegExp(key + '"\s*:\s*"?([\d.]+)', 'i'));
+      return m ? m[1].trim() : null;
+    };
+    const stake = extract("initial_stake") || extract("amount") || extract("stake") || "?";
+    const martingale = extract("martingale_factor") || extract("multiplier") || "1.0";
+    const maxStake = extract("max_stake") || extract("maximum_stake") || "?";
+    const stopLoss = extract("stop_loss") || extract("loss_threshold") || null;
+    const takeProfit = extract("take_profit") || extract("profit_threshold") || null;
+    const targetDigit = extract("prediction") || extract("digit") || extract("barrier") || null;
+    const duration = extract("duration") || extract("ticks") || "1";
+    const symbol = xmlString.match(/R_\d+|1HZ\d+V|JD\d+/)?.[0] || "R_50";
+    // Strategy classification
+    const strategy = contractType.includes("DIFF") ? "DIFFERS" :
+                     contractType.includes("MATCH") ? "MATCHES" :
+                     contractType.includes("CALL") ? "RISE" :
+                     contractType.includes("PUT") ? "FALL" :
+                     contractType.includes("EVEN") ? "EVEN" :
+                     contractType.includes("ODD") ? "ODD" : "UNKNOWN";
+    return {
+      contractType, strategy, stake, martingale: parseFloat(martingale) || 1.0,
+      maxStake, stopLoss, takeProfit, targetDigit, duration, symbol,
+      raw: xmlString,
+    };
+  } catch(e) {
+    return { contractType: "PARSE_ERROR", strategy: "UNKNOWN", raw: xmlString, error: e.message };
+  }
+}
+
+// ── BOT HEALTH CHECKER ────────────────────────────────────────────────────────
+function checkBotHealth(botData, liveStats) {
+  const issues = [];
+  const score = { points: 0, max: 0 };
+  const add = (ok, msg, severity) => {
+    issues.push({ ok, msg, severity });
+    score.max += 2;
+    if (ok) score.points += severity === "critical" ? 2 : 1;
+  };
+  // Stop-loss check
+  add(!!botData.stopLoss, botData.stopLoss ? "Stop-loss set: $" + botData.stopLoss : "No stop-loss — unlimited downside risk!", "critical");
+  // Take-profit check
+  add(!!botData.takeProfit, botData.takeProfit ? "Take-profit set: $" + botData.takeProfit : "No take-profit — profits unprotected", "warn");
+  // Martingale check
+  const mg = parseFloat(botData.martingale) || 1;
+  add(mg <= 2.0, mg <= 1.0 ? "No martingale — safe flat stake" : mg <= 2.0 ? "Martingale x" + mg + " — moderate risk" : "Martingale x" + mg + " — HIGH blow-up risk!", mg > 2 ? "critical" : "warn");
+  // Strategy vs market fit
+  if (liveStats && liveStats.differsWR !== "—") {
+    const dwr = parseFloat(liveStats.differsWR);
+    const isFit = (botData.strategy === "DIFFERS" && dwr >= 47.4) ||
+                  (botData.strategy === "MATCHES" && dwr < 15) ||
+                  (botData.strategy !== "DIFFERS" && botData.strategy !== "MATCHES");
+    add(isFit, isFit ? "Strategy fits current market conditions" : "Strategy may not fit current market conditions", "warn");
+  }
+  // Stake sanity
+  const st = parseFloat(botData.stake);
+  add(!st || st <= 100, !st ? "Stake undetected" : st <= 10 ? "Conservative stake: $" + st : st <= 100 ? "Moderate stake: $" + st : "High stake: $" + st + " — risky for testing!", st > 100 ? "critical" : "warn");
+  const pct = Math.round((score.points / score.max) * 100);
+  const health = pct >= 80 ? "OK" : pct >= 50 ? "WARN" : "CRITICAL";
+  return { issues, health, score: pct };
+}
+
+// ── MARKET MATCH SCORE ─────────────────────────────────────────────────────────
+function getBotMarketMatch(botData, digits, ticks, liveStats) {
+  if (!digits || digits.length < 20) return { score: 0, reason: "Need 20+ ticks for market match" };
+  let score = 0; const notes = [];
+  const freq = getDigitFrequency(digits);
+  const hotColdData = getHotCold(freq);
+  if (botData.strategy === "DIFFERS") {
+    const dwr = liveStats ? parseFloat(liveStats.differsWR) : 90;
+    if (dwr >= 80) { score += 40; notes.push("DIFFERS win rate " + dwr + "% — excellent fit"); }
+    else if (dwr >= 47.4) { score += 25; notes.push("DIFFERS win rate " + dwr + "% — profitable"); }
+    else { score += 5; notes.push("DIFFERS win rate " + dwr + "% — below break-even"); }
+    if (botData.targetDigit !== null) {
+      const td = parseInt(botData.targetDigit);
+      const isCold = hotColdData.cold.includes(td);
+      if (isCold) { score += 30; notes.push("Target digit " + td + " is COLD — ideal for DIFFERS"); }
+      else { score += 10; notes.push("Target digit " + td + " not cold — consider cold digit"); }
+    } else { score += 20; notes.push("No fixed digit target — flexible"); }
+    score += 30;
+  } else if (botData.strategy === "MATCHES") {
+    const matchEntry = freq.find(f => f.digit === parseInt(botData.targetDigit));
+    if (matchEntry && parseFloat(matchEntry.pct) >= 15) { score += 40; notes.push("Target digit " + botData.targetDigit + " appearing " + matchEntry.pct + "% — hot!"); }
+    else { score += 10; notes.push("Target digit not hot — poor MATCHES fit"); }
+  }
+  return { score: Math.min(100, score), notes };
+}
+
+// ── AI CONFIG: OpenRouter multi-key rotation + Groq fallback ─────────────────
+const OR_BOT_KEYS = [
+  "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",
+  "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",
+  "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",
+  "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",
+  "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",
+  "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",
+  "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",
+  "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",
+];
+// Primary: DeepSeek R1 (best reasoning for analysis+XML)
+// Fallback 1: Qwen3 235B (best XML/code generation)
+// Fallback 2: Llama 4 Maverick (1M context, reliable)
+const OR_BOT_MODELS = [
+  "deepseek/deepseek-r1-0528:free",
+  "qwen/qwen3-235b-a22b:free",
+  "meta-llama/llama-4-maverick:free",
+];
+const GROQ_BOT_MODEL = "llama-3.3-70b-versatile";
+
+let _orKeyIdx = 0;
+let _orModelIdx = 0;
+function getNextORKey() {
+  const key = OR_BOT_KEYS[_orKeyIdx % OR_BOT_KEYS.length];
+  _orKeyIdx++;
+  return key;
+}
+function getNextORModel() {
+  const model = OR_BOT_MODELS[_orModelIdx % OR_BOT_MODELS.length];
+  _orModelIdx++;
+  return model;
+}
+
+// ── GENERATE IMPROVED BOT XML ─────────────────────────────────────────────────
+async function generateImprovedBot(originalXml, marketContext, analysisReport) {
+  const systemPrompt = "You are an expert Deriv trading bot developer specializing in synthetic indices. Analyze the provided Deriv bot XML and live market statistics, then output a single improved XML bot file. Rules: (1) Respond with ONLY valid Deriv DBot XML — no markdown fences, no explanations outside XML comments. (2) Always include stop_loss and take_profit. (3) Choose the optimal target digit based on hot/cold digit data. (4) For DIFFERS strategy, optimize for the documented 90.4% win rate on 1HZ100V — use conservative flat stake. (5) Add <!-- comment --> blocks explaining each improvement you made.";
+  const userPrompt = "=== ORIGINAL BOT XML ===\n" + originalXml + "\n\n=== LIVE MARKET ANALYSIS REPORT ===\n" + analysisReport + "\n\n=== MARKET CONTEXT (JSON) ===\n" + JSON.stringify(marketContext, null, 2) + "\n\n=== YOUR TASK ===\nOutput ONLY the improved Deriv DBot XML starting with <?xml version=\"1.0\"?>. Improve: stake sizing (flat $10 recommended for validation phase), stop_loss (set to $50 max daily loss), take_profit (set to $100 daily target), target digit (pick coldest digit for DIFFERS), martingale (disable or set to 1.0 for testing phase). Add XML comments explaining each change.";
+
+  const makeORRequest = async (key, model) => {
+    const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + key,
+        "HTTP-Referer": "https://deriv-oracle.vercel.app",
+        "X-Title": "DERIV-ORACLE Bot Generator",
+      },
+      body: JSON.stringify({
+        model: model,
+        max_tokens: 2000,
+        temperature: 0.2,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error("OR " + resp.status + ": " + (err.error?.message || resp.statusText));
+    }
+    const data = await resp.json();
+    return data.choices?.[0]?.message?.content || null;
+  };
+
+  const makeGroqRequest = async () => {
+    const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + (process.env.REACT_APP_GROQ_API_KEY || "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"),
+      },
+      body: JSON.stringify({
+        model: GROQ_BOT_MODEL,
+        max_tokens: 2000,
+        temperature: 0.2,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+      }),
+    });
+    if (!resp.ok) throw new Error("Groq " + resp.status);
+    const data = await resp.json();
+    return data.choices?.[0]?.message?.content || null;
+  };
+
+  // Try each OpenRouter key+model combo, then fall back to Groq
+  const attempts = [
+    () => makeORRequest(getNextORKey(), OR_BOT_MODELS[0]),   // DeepSeek R1
+    () => makeORRequest(getNextORKey(), OR_BOT_MODELS[1]),   // Qwen3 235B
+    () => makeORRequest(getNextORKey(), OR_BOT_MODELS[2]),   // Llama 4 Maverick
+    () => makeORRequest(getNextORKey(), OR_BOT_MODELS[0]),   // DeepSeek R1 next key
+    () => makeORRequest(getNextORKey(), OR_BOT_MODELS[1]),   // Qwen3 next key
+    () => makeGroqRequest(),                                  // Groq fallback
+  ];
+
+  for (let i = 0; i < attempts.length; i++) {
+    try {
+      const result = await attempts[i]();
+      if (result && result.length > 50) {
+        const model = i < 5 ? OR_BOT_MODELS[i % 3] : GROQ_BOT_MODEL;
+        return "/* Generated by: " + model + " */\n" + result;
+      }
+    } catch(e) {
+      if (i === attempts.length - 1) return "All AI engines failed. Last error: " + e.message;
+      // continue to next attempt
+    }
+  }
+  return "Error: No response from any AI engine.";
+}
+
+// ── BOT ANALYSIS REPORT BUILDER ───────────────────────────────────────────────
+function buildAnalysisReport(digits, ticks, liveStats, symbol) {
+  if (!digits || digits.length < 10) return "Insufficient data — need 20+ ticks";
+  const freq = getDigitFrequency(digits);
+  const hotColdData = getHotCold(freq);
+  const eo = getEvenOddStats(digits);
+  const rf = ticks.length > 1 ? getRiseFallStats(ticks) : null;
+  const ou = getOverUnderStats(digits, 4);
+  const lines = [
+    "=== DERIV-ORACLE LIVE MARKET ANALYSIS ===",
+    "Symbol: " + symbol + " | Ticks Analyzed: " + digits.length,
+    "",
+    "DIGIT FREQUENCY:",
+    freq.map(f => "  Digit " + f.digit + ": " + f.pct + "% (" + f.count + " hits) " + (hotColdData.hot.includes(f.digit) ? "[HOT]" : hotColdData.cold.includes(f.digit) ? "[COLD]" : "")).join("\n"),
+    "",
+    "HOT DIGITS (overdue to NOT appear — ideal DIFFERS targets): " + hotColdData.hot.join(", "),
+    "COLD DIGITS (underrepresented — poor DIFFERS targets): " + hotColdData.cold.join(", "),
+    "",
+    "EVEN/ODD: " + eo.evenPct + "% Even | Current streak: " + eo.streak + "x " + eo.streakType,
+    rf ? "RISE/FALL: " + ((rf.rises/(rf.rises+rf.falls||1))*100).toFixed(1) + "% Rise | Streak: " + rf.streak + "x " + rf.streakType : "",
+    "OVER/UNDER 4: " + ou.overPct + "% Over | " + ou.underPct + "% Under",
+    "",
+    "PAPER TRADE STATS:",
+    liveStats ? "  DIFFERS win rate: " + liveStats.differsWR + "% (" + liveStats.differsTotal + " trades)" : "  No paper trades yet",
+    liveStats ? "  MATCHES win rate: " + liveStats.matchWR + "% (" + liveStats.matchTotal + " trades)" : "",
+    liveStats ? "  Total P&L: $" + liveStats.totalPnl : "",
+    "",
+    "RECOMMENDATION: " + (hotColdData.hot.length > 0 ? "DIFFERS on digit " + hotColdData.hot[0] + " (hottest — most likely NOT to appear next)" : "Monitor for hot digit before betting"),
+  ];
+  return lines.join("\n");
+}
+
 const CustomTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
   return (
@@ -622,6 +880,18 @@ export default function DerivOracle() {
   const [winRateHistory, setWinRateHistory] = useState([]); // [{trade: N, winRate: X, pnl: Y}]
   const [consecutiveLosses, setConsecutiveLosses] = useState(0);
   const [bestTradeType, setBestTradeType] = useState("MATCHES"); // track which type wins more
+
+
+  // ── BOT ANALYZER STATE (Phase 3) ─────────────────────────────────────────
+  const [botSubTab, setBotSubTab] = useState("upload");
+  const [uploadedBots, setUploadedBots] = useState([]);
+  const [selectedBotIdx, setSelectedBotIdx] = useState(null);
+  const [storedBots, setStoredBots] = useState([]);
+  const [botLoading, setBotLoading] = useState(false);
+  const [botAiOutput, setBotAiOutput] = useState("");
+  const [improvedXml, setImprovedXml] = useState("");
+  const [storageStatus, setStorageStatus] = useState("");
+  const [isDragOver, setIsDragOver] = useState(false);
 
   // ── PAPER TRADING STATE ───────────────────────────────────────────────────
   const [paperTrades, setPaperTrades] = useState([]);
@@ -907,6 +1177,113 @@ export default function DerivOracle() {
   const predictMatrix = digits.length >= 20 ? getTransitionMatrix(digits) : null;
   const predictLastDigit = digits.length > 0 ? digits[digits.length - 1] : null;
 
+
+  // ── BOT STORAGE HANDLERS ─────────────────────────────────────────────────
+  const saveBotToStorage = async (botData, improvedXmlStr) => {
+    try {
+      const id = "bot-" + Date.now();
+      const entry = {
+        id, name: botData.contractType + "-" + botData.strategy + "-" + id.slice(-6),
+        strategy: botData.strategy, contractType: botData.contractType,
+        stake: botData.stake, martingale: botData.martingale,
+        stopLoss: botData.stopLoss, takeProfit: botData.takeProfit,
+        symbol: botData.symbol, targetDigit: botData.targetDigit,
+        originalXml: botData.raw, improvedXml: improvedXmlStr || null,
+        savedAt: new Date().toISOString(), symbol: symbol,
+      };
+      await window.storage.set(id, JSON.stringify(entry));
+      // Update index
+      let indexRaw = null;
+      try { indexRaw = await window.storage.get("bot-index"); } catch(e) {}
+      const index = indexRaw ? JSON.parse(indexRaw.value) : [];
+      index.push({ id, name: entry.name, savedAt: entry.savedAt, strategy: entry.strategy });
+      await window.storage.set("bot-index", JSON.stringify(index));
+      setStorageStatus("✓ Bot saved — ID: " + id.slice(-8));
+      loadStoredBots();
+    } catch(e) {
+      setStorageStatus("Storage error: " + e.message);
+    }
+  };
+
+  const loadStoredBots = async () => {
+    try {
+      let indexRaw = null;
+      try { indexRaw = await window.storage.get("bot-index"); } catch(e) {}
+      if (!indexRaw) { setStoredBots([]); return; }
+      const index = JSON.parse(indexRaw.value);
+      const bots = [];
+      for (const entry of index) {
+        try {
+          const raw = await window.storage.get(entry.id);
+          if (raw) bots.push(JSON.parse(raw.value));
+        } catch(e) {}
+      }
+      setStoredBots(bots);
+    } catch(e) {
+      setStorageStatus("Load error: " + e.message);
+    }
+  };
+
+  const deleteStoredBot = async (botId) => {
+    try {
+      await window.storage.delete(botId);
+      let indexRaw = null;
+      try { indexRaw = await window.storage.get("bot-index"); } catch(e) {}
+      if (indexRaw) {
+        const index = JSON.parse(indexRaw.value).filter(e => e.id !== botId);
+        await window.storage.set("bot-index", JSON.stringify(index));
+      }
+      setStorageStatus("Bot deleted.");
+      loadStoredBots();
+    } catch(e) {
+      setStorageStatus("Delete error: " + e.message);
+    }
+  };
+
+  const handleBotFileUpload = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const xmlStr = e.target.result;
+      const parsed = parseBotXML(xmlStr);
+      setUploadedBots(prev => [...prev, parsed]);
+      setSelectedBotIdx(prev => (uploadedBots.length));
+      setBotAiOutput("");
+      setImprovedXml("");
+    };
+    reader.readAsText(file);
+  };
+
+  const handleGenerateBot = async () => {
+    const bot = uploadedBots[selectedBotIdx];
+    if (!bot) return;
+    setBotLoading(true);
+    setBotAiOutput("⟳ Analyzing market data and improving bot...");
+    setImprovedXml("");
+    const health = checkBotHealth(bot, ptStats);
+    const match = getBotMarketMatch(bot, digits, ticks, ptStats);
+    const report = buildAnalysisReport(digits, ticks, ptStats, symbol);
+    const marketCtx = {
+      symbol, tickCount: digits.length,
+      hotDigits: hotCold.hot, coldDigits: hotCold.cold,
+      differsWinRate: ptStats.differsWR, matchesWinRate: ptStats.matchWR,
+      totalTrades: ptStats.total, currentBalance: balance,
+      botHealth: health.health, botScore: health.score,
+      marketMatch: match.score,
+    };
+    const result = await generateImprovedBot(bot.raw, marketCtx, report);
+    const isXml = result.trim().startsWith("<?xml") || result.trim().startsWith("<");
+    if (isXml) {
+      setImprovedXml(result);
+      const modelLine = result.split("\n")[0];
+      const modelUsed = modelLine.startsWith("/*") ? modelLine.replace(/\/\*|\*\//g,"").trim() : "AI engine";
+      setBotAiOutput("✓ " + modelUsed + "\nBot generated successfully. Review the XML below, then download or save to cloud storage.");
+    } else {
+      setBotAiOutput(result);
+    }
+    setBotLoading(false);
+  };
+
   const handleSymbolChange = useCallback((sym) => {
     setSymbol(sym);
     if (wsStatusRef.current === "live" || wsStatusRef.current === "connecting") {
@@ -1056,7 +1433,7 @@ export default function DerivOracle() {
           {/* TABS */}
           {ticks.length > 0 && (
             <div className="tabs">
-              {[["overview","Overview"],["evenodd","Even/Odd"],["risefall","Rise/Fall"],["matchdiffer","Matches/Differs"],["overunder","Over/Under"],["signals","⚡ Signals"],["predict","🎯 Predict"],["papertrade","📋 Paper Trade"]].map(([id, label]) => (
+              {[["overview","Overview"],["evenodd","Even/Odd"],["risefall","Rise/Fall"],["matchdiffer","Matches/Differs"],["overunder","Over/Under"],["signals","⚡ Signals"],["predict","🎯 Predict"],["papertrade","📋 Paper Trade"],["bots","🤖 Bots"]].map(([id, label]) => (
                 <button key={id} className={`tab ${activeTab === id ? "active" : ""}`} onClick={() => setActiveTab(id)}>{label}</button>
               ))}
             </div>
@@ -1863,9 +2240,190 @@ export default function DerivOracle() {
             </div>
           )}
 
+
+          {/* ── 🤖 BOTS TAB ── */}
+          {activeTab === "bots" && (
+            <div>
+              {/* Sub-tabs */}
+              <div className="bot-tabs">
+                {[["upload","⬆ Upload & Analyze"],["stored","🗄 Stored Bots"],["generate","✨ AI Generator"]].map(([id,label]) => (
+                  <button key={id} className={"bot-tab" + (botSubTab===id?" active":"")} onClick={() => { setBotSubTab(id); if(id==="stored") loadStoredBots(); }}>{label}</button>
+                ))}
+              </div>
+
+              {/* UPLOAD SUB-TAB */}
+              {botSubTab === "upload" && (
+                <div>
+                  <div className="panel">
+                    <div className="panel-title"><span className="dot dot-cyan"/>Upload Deriv Bot XML</div>
+                    <div
+                      className={"bot-drop-zone" + (isDragOver ? " drag-over" : "")}
+                      onDragOver={e => { e.preventDefault(); setIsDragOver(true); }}
+                      onDragLeave={() => setIsDragOver(false)}
+                      onDrop={e => { e.preventDefault(); setIsDragOver(false); const f = e.dataTransfer.files[0]; if(f) handleBotFileUpload(f); }}
+                      onClick={() => { const inp = document.createElement("input"); inp.type="file"; inp.accept=".xml"; inp.onchange=ev=>handleBotFileUpload(ev.target.files[0]); inp.click(); }}
+                    >
+                      <div className="bot-drop-zone-icon">🤖</div>
+                      <div style={{ color: "var(--cyan)", fontFamily: "var(--head)", fontSize: 12, letterSpacing: 2, marginBottom: 6 }}>DROP DERIV BOT XML HERE</div>
+                      <div className="bot-drop-zone-text">or click to browse · .xml files only</div>
+                      <div className="bot-drop-zone-text" style={{ marginTop: 6, fontSize: 9 }}>Bot will be parsed, health-checked &amp; matched to live market conditions</div>
+                    </div>
+                  </div>
+
+                  {uploadedBots.length > 0 && (
+                    <div className="panel">
+                      <div className="panel-title"><span className="dot dot-orange"/>Uploaded Bots ({uploadedBots.length})</div>
+                      {uploadedBots.map((bot, idx) => {
+                        const health = checkBotHealth(bot, ptStats);
+                        const match = getBotMarketMatch(bot, digits, ticks, ptStats);
+                        const healthClass = health.health === "OK" ? "bot-health-ok" : health.health === "WARN" ? "bot-health-warn" : "bot-health-critical";
+                        return (
+                          <div key={idx} className={"bot-card" + (selectedBotIdx===idx?" selected":"")} onClick={() => setSelectedBotIdx(idx)}>
+                            <div className="bot-card-header">
+                              <span className="bot-name">🤖 {bot.contractType} — {bot.strategy}</span>
+                              <span className={"bot-health-badge " + healthClass}>{health.health} · {health.score}%</span>
+                            </div>
+                            <div className="bot-params">
+                              <div className="bot-param"><div className="bot-param-val">{bot.stake !== "?" ? "$" + bot.stake : "?"}</div><div className="bot-param-label">STAKE</div></div>
+                              <div className="bot-param"><div className="bot-param-val">{bot.martingale}×</div><div className="bot-param-label">MARTINGALE</div></div>
+                              <div className="bot-param"><div className="bot-param-val">{bot.stopLoss ? "$"+bot.stopLoss : "—"}</div><div className="bot-param-label">STOP LOSS</div></div>
+                              <div className="bot-param"><div className="bot-param-val">{bot.takeProfit ? "$"+bot.takeProfit : "—"}</div><div className="bot-param-label">TAKE PROFIT</div></div>
+                              <div className="bot-param"><div className="bot-param-val">{bot.targetDigit !== null ? bot.targetDigit : "—"}</div><div className="bot-param-label">TARGET DIGIT</div></div>
+                              <div className="bot-param"><div className="bot-param-val">{bot.symbol || "?"}</div><div className="bot-param-label">SYMBOL</div></div>
+                            </div>
+                            <div className="bot-match-score">
+                              <div>
+                                <div className={"bot-match-pct"} style={{ color: match.score >= 70 ? "var(--green)" : match.score >= 40 ? "var(--yellow)" : "var(--red)" }}>{match.score}%</div>
+                                <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 1 }}>MARKET MATCH</div>
+                              </div>
+                              <div style={{ flex: 1 }}>
+                                {(match.notes || []).map((n,i) => <div key={i} style={{ fontSize: 10, color: "var(--text-dim)", marginBottom: 2 }}>· {n}</div>)}
+                              </div>
+                            </div>
+                            <div className="bot-issues">
+                              {health.issues.map((issue, i) => (
+                                <div key={i} className={"bot-issue-item " + (issue.ok ? "bot-issue-ok" : issue.severity==="critical" ? "bot-issue-critical" : "bot-issue-warn")}>
+                                  <span>{issue.ok ? "✓" : issue.severity==="critical" ? "✗" : "⚠"}</span>
+                                  <span>{issue.msg}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                              <button className="btn btn-green" style={{ fontSize: 10, padding: "5px 12px" }} onClick={e => { e.stopPropagation(); setBotSubTab("generate"); setSelectedBotIdx(idx); }}>✨ AI Improve</button>
+                              <button className="btn" style={{ fontSize: 10, padding: "5px 12px" }} onClick={e => { e.stopPropagation(); saveBotToStorage(bot, null); }}>💾 Save Original</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* STORED BOTS SUB-TAB */}
+              {botSubTab === "stored" && (
+                <div className="panel">
+                  <div className="panel-title" style={{ justifyContent: "space-between" }}>
+                    <span><span className="dot dot-cyan"/>Stored Bots ({storedBots.length})</span>
+                    <button className="btn" style={{ fontSize: 10, padding: "4px 10px" }} onClick={loadStoredBots}>↺ Refresh</button>
+                  </div>
+                  {storageStatus && <div style={{ fontSize: 10, color: "var(--green)", marginBottom: 8 }}>{storageStatus}</div>}
+                  {storedBots.length === 0 ? (
+                    <div style={{ color: "var(--text-dim)", fontSize: 11, textAlign: "center", padding: "20px 0" }}>
+                      No bots stored yet. Upload and save a bot first.
+                    </div>
+                  ) : (
+                    <div className="bot-stored-list">
+                      {storedBots.map((bot, idx) => (
+                        <div key={bot.id} className="bot-stored-item">
+                          <div>
+                            <div style={{ fontSize: 12, color: "var(--cyan)", fontFamily: "var(--head)", letterSpacing: 1 }}>🤖 {bot.name}</div>
+                            <div style={{ fontSize: 9, color: "var(--text-dim)", marginTop: 3 }}>
+                              {bot.strategy} · Stake ${bot.stake} · Martingale {bot.martingale}× · Saved {bot.savedAt ? bot.savedAt.slice(0,10) : "?"}
+                            </div>
+                            {bot.improvedXml && <div style={{ fontSize: 9, color: "var(--green)", marginTop: 2 }}>✨ AI-improved version available</div>}
+                          </div>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <button className="btn btn-green" style={{ fontSize: 9, padding: "3px 8px" }} onClick={() => { setImprovedXml(bot.improvedXml || bot.originalXml || ""); setBotSubTab("generate"); }}>View XML</button>
+                            <button className="btn" style={{ fontSize: 9, padding: "3px 8px", color: "var(--red)", borderColor: "var(--red)" }} onClick={() => deleteStoredBot(bot.id)}>✕</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* AI GENERATOR SUB-TAB */}
+              {botSubTab === "generate" && (
+                <div>
+                  <div className="panel">
+                    <div className="panel-title" style={{ justifyContent: "space-between" }}>
+                      <span><span className="dot dot-green"/>AI Bot Generator</span>
+                      <span style={{ fontSize: 9, color: "var(--green)", letterSpacing: 1 }}>DEEPSEEK R1 → QWEN3 235B → LLAMA 4 · OPENROUTER · AUTO-ROTATE</span>
+                    </div>
+                    {uploadedBots.length === 0 ? (
+                      <div style={{ color: "var(--text-dim)", fontSize: 11, padding: "16px 0" }}>
+                        Upload a bot XML first, then come here to generate an improved version.
+                        <br/><br/>
+                        <button className="btn btn-green" onClick={() => setBotSubTab("upload")}>⬆ Go to Upload</button>
+                      </div>
+                    ) : (
+                      <div>
+                        <div style={{ marginBottom: 10 }}>
+                          <div style={{ fontSize: 10, color: "var(--text-dim)", marginBottom: 6, letterSpacing: 1 }}>SELECT BOT TO IMPROVE</div>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {uploadedBots.map((bot, idx) => (
+                              <button key={idx} className={"btn" + (selectedBotIdx===idx?" btn-green":"")} style={{ fontSize: 10, padding: "4px 10px" }} onClick={() => { setSelectedBotIdx(idx); setBotAiOutput(""); setImprovedXml(""); }}>
+                                Bot {idx+1}: {bot.strategy}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div style={{ background: "rgba(0,0,0,0.3)", border: "1px solid var(--border)", borderRadius: 4, padding: 10, marginBottom: 10 }}>
+                          <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, marginBottom: 6 }}>MARKET CONTEXT BEING SENT TO AI</div>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
+                            {[["Symbol", symbol],["Ticks", digits.length],["Hot Digits", hotCold.hot.join(", ")||"—"],["Cold Digits", hotCold.cold.join(", ")||"—"],["DIFFERS WR", ptStats.differsWR+"%"],["MATCHES WR", ptStats.matchWR+"%"]].map(([label,val]) => (
+                              <div key={label} style={{ background: "rgba(255,255,255,0.02)", border: "1px solid var(--border)", borderRadius: 3, padding: "5px 8px" }}>
+                                <div style={{ fontSize: 12, color: "var(--cyan)", fontFamily: "var(--mono)" }}>{val}</div>
+                                <div style={{ fontSize: 8, color: "var(--text-dim)", letterSpacing: 1 }}>{label}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        <button className="btn btn-green" style={{ width: "100%", padding: "10px", fontSize: 12, letterSpacing: 2 }} onClick={handleGenerateBot} disabled={botLoading || selectedBotIdx===null}>
+                          {botLoading ? "⟳ DeepSeek R1 ANALYZING + GENERATING..." : "✨ GENERATE IMPROVED BOT"}
+                        </button>
+                        {botAiOutput && (
+                          <div style={{ marginTop: 12 }}>
+                            <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, marginBottom: 6 }}>AI ANALYSIS</div>
+                            <div className="bot-ai-output">{botAiOutput}</div>
+                          </div>
+                        )}
+                        {improvedXml && (
+                          <div style={{ marginTop: 12 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                              <div style={{ fontSize: 9, color: "var(--green)", letterSpacing: 2 }}>✨ IMPROVED BOT XML</div>
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <button className="btn btn-green" style={{ fontSize: 9, padding: "3px 10px" }} onClick={() => { const bl = new Blob([improvedXml], {type:"text/xml"}); const a=document.createElement("a"); a.href=URL.createObjectURL(bl); a.download="improved-bot.xml"; a.click(); }}>⬇ Download XML</button>
+                                <button className="btn" style={{ fontSize: 9, padding: "3px 10px" }} onClick={() => { if(uploadedBots[selectedBotIdx]) saveBotToStorage(uploadedBots[selectedBotIdx], improvedXml); }}>💾 Save to Storage</button>
+                              </div>
+                            </div>
+                            <div className="bot-xml-preview">{improvedXml}</div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {storageStatus && <div style={{ fontSize: 10, color: "var(--green)", padding: "6px 0" }}>{storageStatus}</div>}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* PHASE 2 TEASER */}
           <div className="phase2-banner">
-            <div className="phase2-title">⚙ PHASE 3 — XML BOT ANALYZER + ONE-CLICK TRADE EXECUTION [COMING SOON]</div>
+            <div className="phase2-title">⚙ PHASE 3 ✅ — XML BOT ANALYZER + AI BOT GENERATOR ACTIVE · PHASE 4 — ONE-CLICK TRADE EXECUTION [COMING SOON]</div>
             <div className="phase2-sub">Upload Deriv bot XML files · Auto-detect strategy · Bot health check · Buy contracts directly from dashboard</div>
           </div>
 
