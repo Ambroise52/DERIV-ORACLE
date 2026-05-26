@@ -340,7 +340,7 @@ Use trader language. Be direct. No disclaimers.`;
 // ── CSS ───────────────────────────────────────────────────────────────────────
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Rajdhani:wght@400;500;600;700&display=swap');
-  *{box-sizing:border-box;margin:0;padding:0;}
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
   :root{
     --bg:#060608;--bg2:#0c0c12;--bg3:#12121e;
     --panel:rgba(14,14,24,0.97);--border:#1e1e38;--border2:#2a2a48;
@@ -471,7 +471,7 @@ const css = `
   .three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
   .divider{border:none;border-top:1px solid var(--border);margin:10px 0;}
   /* Tabs */
-  .tabs{display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid var(--border);}
+  .tabs{display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid var(--border);overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
   .tab{padding:8px 12px;font-family:var(--head);font-size:11px;letter-spacing:2px;
     text-transform:uppercase;cursor:pointer;border:none;background:transparent;
     color:var(--text-dim);border-bottom:2px solid transparent;margin-bottom:-1px;transition:all 0.2s;}
@@ -583,13 +583,61 @@ const css = `
   .wr-stat-val{font-size:20px;font-weight:700;font-family:var(--head);}
   .wr-stat-label{font-size:9px;letter-spacing:2px;color:var(--text-dim);margin-top:2px;}
   /* Best strategy badge */
+  @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
+  .bot-ai-output{animation:fadeIn 0.3s ease;}
+  .bot-xml-preview{animation:fadeIn 0.3s ease;}
+  .conn-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
   .best-badge{display:inline-flex;align-items:center;gap:8px;padding:6px 14px;
     border:1px solid var(--green);border-radius:3px;background:var(--green-dim);
     font-size:11px;font-weight:700;letter-spacing:2px;color:var(--green);}
 
-    @media(max-width:900px){
+    /* ── MOBILE RESPONSIVE ─────────────────────────────── */
+  @media(max-width:900px){
     .grid-top,.grid-2,.grid-3{grid-template-columns:1fr;}
     .symbol-bar{gap:4px;}
+  }
+  @media(max-width:700px){
+    .tabs{overflow-x:auto;flex-wrap:nowrap;padding-bottom:2px;-webkit-overflow-scrolling:touch;}
+    .tabs::-webkit-scrollbar{height:2px;}
+    .tabs::-webkit-scrollbar-thumb{background:var(--border2);}
+    .tab{white-space:nowrap;font-size:9px;padding:7px 10px;letter-spacing:1px;}
+    .bot-tabs{overflow-x:auto;flex-wrap:nowrap;}
+    .bot-tab{white-space:nowrap;font-size:9px;padding:5px 10px;}
+    .live-stats{flex-wrap:wrap;gap:8px;padding:8px 10px;}
+    .live-stat{min-width:calc(50% - 8px);flex:1;}
+    .live-stat-val{font-size:13px;}
+    .conn-bar,.header-controls{flex-wrap:wrap;gap:6px;}
+    .symbol-bar{gap:3px;padding:8px;}
+    .sym-btn{padding:4px 8px;font-size:9px;}
+    .panel{padding:10px;}
+    .panel-title{font-size:10px;letter-spacing:2px;}
+    .bot-params{grid-template-columns:repeat(2,1fr);}
+    .bot-param-val{font-size:12px;}
+    .winrate-stats{grid-template-columns:repeat(2,1fr);}
+    .wr-stat-val{font-size:16px;}
+    .digit-freq-grid{grid-template-columns:repeat(5,1fr);}
+    .signal-box{padding:8px 6px;}
+    .signal-val{font-size:22px;}
+    .sc-bar{width:50px;}
+    .sc-conf{font-size:15px;}
+    .bot-match-score{flex-direction:column;gap:6px;}
+    .bot-match-pct{font-size:16px;}
+    .kelly-input{width:65px;}
+    .two-col{grid-template-columns:1fr 1fr;}
+    .matrix-cell{font-size:8px;padding:3px;}
+    .predict-card{padding:10px;}
+  }
+  @media(max-width:480px){
+    .tabs{gap:1px;}
+    .tab{font-size:8px;padding:6px 8px;}
+    .live-stat{min-width:100%;flex:auto;}
+    .bot-params{grid-template-columns:1fr 1fr;}
+    .digit-freq-grid{grid-template-columns:repeat(5,1fr);}
+    .winrate-stats{grid-template-columns:repeat(2,1fr);}
+    .phase2-banner{padding:10px;}
+    .phase2-title{font-size:8px;}
+    .phase2-sub{font-size:8px;}
   }
 `;
 
@@ -742,8 +790,25 @@ function getNextORModel() {
 
 // ── GENERATE IMPROVED BOT XML ─────────────────────────────────────────────────
 async function generateImprovedBot(originalXml, marketContext, analysisReport) {
-  const systemPrompt = "You are an expert Deriv trading bot developer specializing in synthetic indices. Analyze the provided Deriv bot XML and live market statistics, then output a single improved XML bot file. Rules: (1) Respond with ONLY valid Deriv DBot XML — no markdown fences, no explanations outside XML comments. (2) Always include stop_loss and take_profit. (3) Choose the optimal target digit based on hot/cold digit data. (4) For DIFFERS strategy, optimize for the documented 90.4% win rate on 1HZ100V — use conservative flat stake. (5) Add <!-- comment --> blocks explaining each improvement you made.";
-  const userPrompt = "=== ORIGINAL BOT XML ===\n" + originalXml + "\n\n=== LIVE MARKET ANALYSIS REPORT ===\n" + analysisReport + "\n\n=== MARKET CONTEXT (JSON) ===\n" + JSON.stringify(marketContext, null, 2) + "\n\n=== YOUR TASK ===\nOutput ONLY the improved Deriv DBot XML starting with <?xml version=\"1.0\"?>. Improve: stake sizing (flat $10 recommended for validation phase), stop_loss (set to $50 max daily loss), take_profit (set to $100 daily target), target digit (pick coldest digit for DIFFERS), martingale (disable or set to 1.0 for testing phase). Add XML comments explaining each change.";
+  // Truncate XML to avoid 413 / context overflow — keep first 2500 chars
+  const xmlSnippet = originalXml.length > 2500
+    ? originalXml.slice(0, 2500) + "\n<!-- ...truncated for brevity -->"
+    : originalXml;
+  // Compact market report
+  const reportSnippet = analysisReport.length > 1200
+    ? analysisReport.slice(0, 1200) + "..."
+    : analysisReport;
+  const ctxStr = JSON.stringify({
+    symbol: marketContext.symbol,
+    hotDigits: marketContext.hotDigits,
+    coldDigits: marketContext.coldDigits,
+    differsWinRate: marketContext.differsWinRate,
+    totalTrades: marketContext.totalTrades,
+    botHealth: marketContext.botHealth,
+  });
+
+  // Single combined prompt — avoids system-role issues on some free models
+  const fullPrompt = "You are an expert Deriv DBot developer. Study the XML and market data below, then output ONE improved Deriv DBot XML file.\n\nRULES:\n- Output ONLY valid XML starting with <?xml version=\"1.0\"?>\n- No markdown, no code fences\n- Always include stop_loss and take_profit nodes\n- For DIFFERS: use coldest digit as prediction, flat $10 stake, martingale=1\n- Add <!-- comment --> lines explaining every change made\n\n=== ORIGINAL BOT XML (excerpt) ===\n" + xmlSnippet + "\n\n=== LIVE MARKET DATA ===\n" + reportSnippet + "\n\n=== KEY STATS ===\n" + ctxStr + "\n\nNow output the improved XML:";
 
   const makeORRequest = async (key, model) => {
     const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -752,24 +817,23 @@ async function generateImprovedBot(originalXml, marketContext, analysisReport) {
         "Content-Type": "application/json",
         "Authorization": "Bearer " + key,
         "HTTP-Referer": "https://deriv-oracle.vercel.app",
-        "X-Title": "DERIV-ORACLE Bot Generator",
+        "X-Title": "DERIV-ORACLE",
       },
       body: JSON.stringify({
-        model: model,
-        max_tokens: 2000,
-        temperature: 0.2,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
+        model,
+        max_tokens: 1800,
+        temperature: 0.15,
+        messages: [{ role: "user", content: fullPrompt }],
       }),
     });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error("OR " + resp.status + ": " + (err.error?.message || resp.statusText));
-    }
     const data = await resp.json();
-    return data.choices?.[0]?.message?.content || null;
+    if (!resp.ok) {
+      const msg = data?.error?.message || data?.error || resp.statusText;
+      throw new Error("OR-" + resp.status + " [" + model.split("/").pop() + "]: " + msg);
+    }
+    const text = data.choices?.[0]?.message?.content || "";
+    if (!text || text.length < 40) throw new Error("Empty response from " + model);
+    return { text, model };
   };
 
   const makeGroqRequest = async () => {
@@ -781,42 +845,39 @@ async function generateImprovedBot(originalXml, marketContext, analysisReport) {
       },
       body: JSON.stringify({
         model: GROQ_BOT_MODEL,
-        max_tokens: 2000,
-        temperature: 0.2,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
+        max_tokens: 1800,
+        temperature: 0.15,
+        messages: [{ role: "user", content: fullPrompt }],
       }),
     });
-    if (!resp.ok) throw new Error("Groq " + resp.status);
     const data = await resp.json();
-    return data.choices?.[0]?.message?.content || null;
+    if (!resp.ok) throw new Error("Groq-" + resp.status + ": " + (data?.error?.message || "unknown"));
+    const text = data.choices?.[0]?.message?.content || "";
+    if (!text || text.length < 40) throw new Error("Groq empty response");
+    return { text, model: GROQ_BOT_MODEL };
   };
 
-  // Try each OpenRouter key+model combo, then fall back to Groq
-  const attempts = [
-    () => makeORRequest(getNextORKey(), OR_BOT_MODELS[0]),   // DeepSeek R1
-    () => makeORRequest(getNextORKey(), OR_BOT_MODELS[1]),   // Qwen3 235B
-    () => makeORRequest(getNextORKey(), OR_BOT_MODELS[2]),   // Llama 4 Maverick
-    () => makeORRequest(getNextORKey(), OR_BOT_MODELS[0]),   // DeepSeek R1 next key
-    () => makeORRequest(getNextORKey(), OR_BOT_MODELS[1]),   // Qwen3 next key
-    () => makeGroqRequest(),                                  // Groq fallback
+  // Rotate across keys and models — 8 OR attempts then Groq
+  const orAttempts = [
+    [0, 0], [1, 1], [2, 2], [3, 0], [4, 1], [5, 2], [6, 0], [7, 1],
   ];
-
-  for (let i = 0; i < attempts.length; i++) {
+  const errors = [];
+  for (const [ki, mi] of orAttempts) {
     try {
-      const result = await attempts[i]();
-      if (result && result.length > 50) {
-        const model = i < 5 ? OR_BOT_MODELS[i % 3] : GROQ_BOT_MODEL;
-        return "/* Generated by: " + model + " */\n" + result;
-      }
+      const { text, model } = await makeORRequest(OR_BOT_KEYS[ki], OR_BOT_MODELS[mi]);
+      return { text, model, engine: "OpenRouter" };
     } catch(e) {
-      if (i === attempts.length - 1) return "All AI engines failed. Last error: " + e.message;
-      // continue to next attempt
+      errors.push(e.message);
     }
   }
-  return "Error: No response from any AI engine.";
+  // Final fallback: Groq
+  try {
+    const { text, model } = await makeGroqRequest();
+    return { text, model, engine: "Groq" };
+  } catch(e) {
+    errors.push("Groq: " + e.message);
+  }
+  return { text: null, model: null, engine: null, errors };
 }
 
 // ── BOT ANALYSIS REPORT BUILDER ───────────────────────────────────────────────
@@ -1254,15 +1315,19 @@ export default function DerivOracle() {
     reader.readAsText(file);
   };
 
+  const [generatingModel, setGeneratingModel] = useState("");
+
   const handleGenerateBot = async () => {
     const bot = uploadedBots[selectedBotIdx];
     if (!bot) return;
     setBotLoading(true);
-    setBotAiOutput("⟳ Analyzing market data and improving bot...");
+    setGeneratingModel("DeepSeek R1");
+    setBotAiOutput("⟳ Step 1/3: Building market analysis report...");
     setImprovedXml("");
     const health = checkBotHealth(bot, ptStats);
     const match = getBotMarketMatch(bot, digits, ticks, ptStats);
     const report = buildAnalysisReport(digits, ticks, ptStats, symbol);
+    setBotAiOutput("⟳ Step 2/3: Packaging context — " + (bot.raw ? bot.raw.length : 0) + " XML chars, " + digits.length + " ticks, " + (ptStats.total || 0) + " paper trades...");
     const marketCtx = {
       symbol, tickCount: digits.length,
       hotDigits: hotCold.hot, coldDigits: hotCold.cold,
@@ -1271,15 +1336,18 @@ export default function DerivOracle() {
       botHealth: health.health, botScore: health.score,
       marketMatch: match.score,
     };
+    setBotAiOutput("⟳ Step 3/3: Sending to AI — trying DeepSeek R1 → Qwen3 235B → Llama 4 → Groq...");
     const result = await generateImprovedBot(bot.raw, marketCtx, report);
-    const isXml = result.trim().startsWith("<?xml") || result.trim().startsWith("<");
-    if (isXml) {
-      setImprovedXml(result);
-      const modelLine = result.split("\n")[0];
-      const modelUsed = modelLine.startsWith("/*") ? modelLine.replace(/\/\*|\*\//g,"").trim() : "AI engine";
-      setBotAiOutput("✓ " + modelUsed + "\nBot generated successfully. Review the XML below, then download or save to cloud storage.");
+    if (!result.text) {
+      const errList = (result.errors || []).join("\n");
+      setBotAiOutput("✗ All AI engines failed.\n\nErrors:\n" + errList + "\n\nTip: Connect live data and run a few paper trades first to provide richer market context.");
     } else {
-      setBotAiOutput(result);
+      const xmlText = result.text;
+      const isXml = xmlText.trim().startsWith("<?xml") || xmlText.trim().startsWith("<xml") || xmlText.trim().startsWith("<strategy") || xmlText.includes("<strategy") || xmlText.includes("trade_type");
+      const cleanXml = xmlText.replace(/^```xml\n?|^```\n?|\n?```$/g, "").trim();
+      setImprovedXml(cleanXml);
+      setGeneratingModel(result.model || "");
+      setBotAiOutput("✓ Generated by: " + result.model + " [" + result.engine + "]\n\nBot improved successfully. Key changes applied based on:\n· Symbol: " + symbol + "\n· Hot digits: " + (hotCold.hot.join(", ")||"none") + "\n· Cold digits (DIFFERS targets): " + (hotCold.cold.join(", ")||"none") + "\n· DIFFERS win rate: " + ptStats.differsWR + "%\n\nReview the XML below, then download or save to cloud storage.");
     }
     setBotLoading(false);
   };
@@ -2391,13 +2459,28 @@ export default function DerivOracle() {
                             ))}
                           </div>
                         </div>
-                        <button className="btn btn-green" style={{ width: "100%", padding: "10px", fontSize: 12, letterSpacing: 2 }} onClick={handleGenerateBot} disabled={botLoading || selectedBotIdx===null}>
-                          {botLoading ? "⟳ DeepSeek R1 ANALYZING + GENERATING..." : "✨ GENERATE IMPROVED BOT"}
+                        <button className="btn btn-green" style={{ width: "100%", padding: "10px", fontSize: 12, letterSpacing: 2, position: "relative" }} onClick={handleGenerateBot} disabled={botLoading || selectedBotIdx===null}>
+                          {botLoading
+                            ? <span style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                                <span style={{ display: "inline-block", animation: "spin 1s linear infinite", fontSize: 14 }}>⟳</span>
+                                <span>ANALYZING — {generatingModel || "AI"}</span>
+                              </span>
+                            : "✨ GENERATE IMPROVED BOT"}
                         </button>
+                        {botAiOutput && botAiOutput.startsWith("✗") && (
+                          <button className="btn btn-orange" style={{ width: "100%", padding: "7px", fontSize: 10, letterSpacing: 1, marginTop: 6 }} onClick={handleGenerateBot} disabled={botLoading}>
+                            ↺ RETRY WITH NEXT AI ENGINE
+                          </button>
+                        )}
                         {botAiOutput && (
                           <div style={{ marginTop: 12 }}>
-                            <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, marginBottom: 6 }}>AI ANALYSIS</div>
-                            <div className="bot-ai-output">{botAiOutput}</div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                              <span style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2 }}>AI STATUS</span>
+                              {botAiOutput.startsWith("✓") && <span style={{ fontSize: 9, color: "var(--green)", background: "var(--green-dim)", border: "1px solid var(--green)", padding: "2px 8px", borderRadius: 2 }}>SUCCESS</span>}
+                              {botAiOutput.startsWith("✗") && <span style={{ fontSize: 9, color: "var(--red)", background: "var(--red-dim)", border: "1px solid var(--red)", padding: "2px 8px", borderRadius: 2 }}>FAILED</span>}
+                              {botAiOutput.startsWith("⟳") && <span style={{ fontSize: 9, color: "var(--yellow)", background: "var(--yellow-dim)", border: "1px solid var(--yellow)", padding: "2px 8px", borderRadius: 2 }}>WORKING...</span>}
+                            </div>
+                            <div className="bot-ai-output" style={{ color: botAiOutput.startsWith("✓") ? "var(--green)" : botAiOutput.startsWith("✗") ? "var(--red)" : "var(--yellow)" }}>{botAiOutput}</div>
                           </div>
                         )}
                         {improvedXml && (
