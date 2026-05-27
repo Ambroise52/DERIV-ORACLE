@@ -592,6 +592,55 @@ const css = `
     border:1px solid var(--green);border-radius:3px;background:var(--green-dim);
     font-size:11px;font-weight:700;letter-spacing:2px;color:var(--green);}
 
+
+  /* ── PHASE 4 — EXECUTE TAB ─────────────────────────────────────────── */
+  .execute-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;}
+  .arm-btn{width:100%;padding:16px;font-family:var(--head);font-size:13px;letter-spacing:3px;
+    border:2px solid var(--border);background:transparent;color:var(--text-dim);
+    cursor:pointer;border-radius:4px;transition:all 0.3s;position:relative;overflow:hidden;}
+  .arm-btn.armed{border-color:var(--green);color:var(--green);background:rgba(0,255,136,0.06);
+    box-shadow:0 0 20px rgba(0,255,136,0.15);}
+  .arm-btn.armed::before{content:"";position:absolute;top:0;left:-100%;width:100%;height:100%;
+    background:linear-gradient(90deg,transparent,rgba(0,255,136,0.1),transparent);
+    animation:sweep 2s infinite;}
+  @keyframes sweep{to{left:100%;}}
+  .arm-btn.firing{border-color:var(--orange);color:var(--orange);background:rgba(255,165,0,0.06);
+    animation:pulse-border 0.5s infinite;}
+  @keyframes pulse-border{0%,100%{box-shadow:0 0 8px rgba(255,165,0,0.3);}50%{box-shadow:0 0 24px rgba(255,165,0,0.7);}}
+  .signal-live{border:1px solid var(--border);border-radius:4px;padding:12px;
+    background:rgba(0,0,0,0.3);display:flex;flex-direction:column;gap:6px;}
+  .signal-live.hot{border-color:var(--green);background:rgba(0,255,136,0.04);}
+  .signal-live-label{font-size:8px;letter-spacing:3px;color:var(--text-dim);}
+  .signal-live-val{font-size:28px;font-weight:900;font-family:var(--head);line-height:1;}
+  .execute-log{background:#03030a;border:1px solid var(--border);border-radius:4px;
+    max-height:280px;overflow-y:auto;font-family:var(--mono);font-size:10px;}
+  .execute-log-row{display:grid;grid-template-columns:80px 60px 55px 55px 60px 1fr;
+    gap:6px;padding:6px 10px;border-bottom:1px solid rgba(255,255,255,0.03);align-items:center;}
+  .execute-log-row.win{border-left:2px solid var(--green);}
+  .execute-log-row.loss{border-left:2px solid var(--red);}
+  .execute-log-row.pending{border-left:2px solid var(--yellow);animation:fadeIn 0.3s ease;}
+  .exec-pnl-pos{color:var(--green);font-weight:700;}
+  .exec-pnl-neg{color:var(--red);font-weight:700;}
+  .exec-stat-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px;}
+  .exec-stat{background:rgba(0,0,0,0.3);border:1px solid var(--border);border-radius:3px;
+    padding:8px 10px;text-align:center;}
+  .exec-stat-val{font-size:18px;font-weight:700;font-family:var(--head);}
+  .exec-stat-label{font-size:8px;letter-spacing:2px;color:var(--text-dim);margin-top:2px;}
+  .stake-input{background:rgba(0,0,0,0.4);border:1px solid var(--border2);border-radius:3px;
+    padding:8px 12px;color:var(--text);font-family:var(--mono);font-size:14px;
+    width:100%;outline:none;transition:border-color 0.2s;}
+  .stake-input:focus{border-color:var(--cyan);}
+  .latency-bar{display:flex;align-items:center;gap:8px;padding:5px 10px;
+    background:rgba(0,0,0,0.3);border-radius:3px;border:1px solid var(--border);}
+  .latency-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;}
+  .latency-good{background:var(--green);box-shadow:0 0 6px var(--green);}
+  .latency-ok{background:var(--yellow);box-shadow:0 0 6px var(--yellow);}
+  .latency-bad{background:var(--red);box-shadow:0 0 6px var(--red);}
+  .confirm-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:999;
+    display:flex;align-items:center;justify-content:center;}
+  .confirm-box{background:#0a0a14;border:1px solid var(--orange);border-radius:6px;
+    padding:28px;max-width:380px;width:90%;text-align:center;}
+
     /* ── MOBILE RESPONSIVE ─────────────────────────────── */
   @media(max-width:900px){
     .grid-top,.grid-2,.grid-3{grid-template-columns:1fr;}
@@ -840,15 +889,7 @@ async function generateImprovedBot(originalXml, marketContext, analysisReport) {
     '        <field name="MODE">WHILE</field>',
     '        <value name="BOOL"><block type="logic_boolean" id="B1"><field name="BOOL">TRUE</field></block></value>',
     '        <statement name="DO">',
-    '          <block type="tradeOptions" id="TO1">',
-    '            <field name="DURATIONTYPE_LIST">t</field>',
-    '            <field name="CURRENCY_LIST">USD</field>',
-    '            <field name="BARRIEROFFSETTYPE_LIST">+</field>',
-    '            <field name="SECONDBARRIEROFFSETTYPE_LIST">-</field>',
-    '            <value name="DURATION"><shadow type="math_number" id="DUR1"><field name="NUM">1</field></shadow></value>',
-    '            <value name="AMOUNT"><shadow type="math_number" id="AMT1"><field name="NUM">10</field></shadow><block type="variables_get" id="GS1"><field name="VAR" id="VAR3" variabletype="">INITIAL_STAKE</field></block></value>',
-    '            <value name="PREDICTION"><shadow type="math_number" id="PRD1"><field name="NUM">5</field></shadow><block type="variables_get" id="GP1"><field name="VAR" id="VAR5" variabletype="">PREDICTION</field></block></value>',
-    '          </block>',
+    '          <!-- trade conditions and tradeOptions block go here -->',
     '        </statement>',
     '      </block>',
     '    </statement>',
@@ -860,47 +901,26 @@ async function generateImprovedBot(originalXml, marketContext, analysisReport) {
     '  </block>',
     '  <block type="after_purchase" id="AFTER1" x="0" y="900">',
     '    <statement name="AFTERPURCHASE_STACK">',
-    '      <block type="math_change" id="UPD_PNL">',
-    '        <field name="VAR" id="VAR_PNL" variabletype="">TOTAL_PNL</field>',
-    '        <value name="DELTA"><shadow type="math_number" id="D_PNL"><field name="NUM">1</field></shadow><block type="read_details" id="RD1"><field name="DETAIL_INDEX">4</field></block></value>',
-    '        <next>',
-    '          <block type="controls_if" id="WIN_CHECK">',
-    '            <value name="IF0"><block type="contract_check_result" id="CCR1"><field name="CHECK_RESULT">win</field></block></value>',
-    '            <statement name="DO0"><block type="variables_set" id="WIN_RESET"><field name="VAR" id="VAR3" variabletype="">INITIAL_STAKE</field><value name="VALUE"><block type="math_number" id="RS_NUM"><field name="NUM">10</field></block></value></block></statement>',
-    '            <next>',
-    '              <block type="trade_again" id="TA1"></block>',
-    '            </next>',
-    '          </block>',
-    '        </next>',
-    '      </block>',
+    '      <!-- if win: reset stake, trade_again. if loss: martingale or stop -->',
     '    </statement>',
     '  </block>',
     '</xml>',
   ].join("\n");
 
   const RULES = [
-    "ROOT: <xml xmlns=\"http://www.w3.org/1999/xhtml\" collection=\"false\"> — no <?xml?> header, no DOCTYPE",
-    "VARIABLES: <variable type=\"\" id=\"UNIQUE_ID\">VARNAME</variable> — type must be empty string, not number/boolean",
-    "VARIABLES_SET: <block type=\"variables_set\"><field name=\"VAR\" id=\"VARID\" variabletype=\"\">VARNAME</field><value name=\"VALUE\"><block type=\"math_number\"><field name=\"NUM\">10</field></block></value><next>...</next></block>",
-    "TRADEOPTIONS: Use <value name=\"AMOUNT\"> for stake (NOT name=\"STAKE\"), <value name=\"PREDICTION\">, <value name=\"DURATION\"> — each with <shadow type=\"math_number\"> fallback THEN <block type=\"variables_get\">",
-    "CONTROLS_IF: <controls_if><value name=\"IF0\"><block type=\"logic_compare\"><field name=\"OP\">EQ</field><value name=\"A\">...</value><value name=\"B\">...</value></block></value><statement name=\"DO0\">...</statement></controls_if>",
-    "WIN CHECK: <block type=\"contract_check_result\"><field name=\"CHECK_RESULT\">win</field></block>",
-    "LOSS CHECK: <block type=\"contract_check_result\"><field name=\"CHECK_RESULT\">loss</field></block>",
-    "READ PROFIT: <block type=\"read_details\"><field name=\"DETAIL_INDEX\">4</field></block>",
-    "CONTINUE TRADING: <block type=\"trade_again\"></block> — NOT stop_bot",
-    "NEGATE number: <block type=\"math_single\"><field name=\"OP\">NEG</field><value name=\"NUM\"><shadow type=\"math_number\"><field name=\"NUM\">9</field></shadow><block type=\"variables_get\">...</block></value></block>",
-    "NOTIFY: <block type=\"notify\"><field name=\"NOTIFICATION_TYPE\">success|warn|error|info</field><field name=\"NOTIFICATION_SOUND\">silent</field><value name=\"MESSAGE\"><shadow type=\"text\"><field name=\"TEXT\">message here</field></shadow></value></block>",
-    "PURCHASE: <block type=\"purchase\"><field name=\"PURCHASE_LIST\">DIGITDIFF</field></block>",
-    "FORBIDDEN block types (do not invent): stop_bot, logic_binary, trade_result — use trade_again, logic_compare, contract_check_result instead",
-    "Symbol: 1HZ100V | TRADETYPE_LIST: matchesdiffers | TYPE_LIST: DIGITDIFF | PURCHASE_LIST: DIGITDIFF",
-    "No markdown, no code fences, no raw text values in <value> nodes — always wrap numbers in <block type=\"math_number\">",
+    "Root: <xml xmlns=\"http://www.w3.org/1999/xhtml\" collection=\"false\"> (NO <?xml ?> header)",
+    "Required blocks: trade, before_purchase (with purchase child), after_purchase",
+    "Every <block> needs unique id= attribute",
+    "Variables declared in <variables> with matching variabletype= references",
+    "No markdown, no code fences — raw XML only",
+    "Symbol: 1HZ100V, TRADETYPE_LIST: matchesdiffers, TYPE_LIST: DIGITDIFF",
+    "PURCHASE_LIST: DIGITDIFF in before_purchase block",
+    "Use <!-- comment --> to explain each improvement made",
   ].join("\n");
 
-  const GOLDEN_EXAMPLE = "<variables>\n    <variable type=\"\" id=\"3C@HUF)?z(zn8g3GPaNd\">TARGET PROFIT</variable>\n    <variable type=\"\" id=\"/|o~W%gQIAM#UHZO!zA*\">STAKE_MODAL</variable>\n    <variable type=\"\" id=\"nfN(I4pYa%!hdG-=ekrk\">Initial Stake</variable>\n    <variable type=\"\" id=\"~12olgeNy)D^x^u7$b{o\">PREDIKSI</variable>\n    <variable type=\"\" id=\"+e9-IVuJ/mv#4%/,MX2r\">STOP_LOSS</variable>\n    <variable type=\"\" id=\"WB^wGp{On}ZKq/4LK4Ca\">MARTI</variable>\n  </variables>\n<!-- tradeOptions structure -->\n<block type=\"tradeOptions\" id=\"zB3=PkD2eZ%X%(f9v-*E\">\n        <field name=\"DURATIONTYPE_LIST\">t</field>\n        <field name=\"CURRENCY_LIST\">USD</field>\n        <field name=\"BARRIEROFFSETTYPE_LIST\">+</field>\n        <field name=\"SECONDBARRIEROFFSETTYPE_LIST\">-</field>\n        <value name=\"DURATION\">\n          <shadow type=\"math_number\" id=\"5V-_Pm5hl%K|AyV01I2o\">\n            <field name=\"NUM\">2</field>\n          </shadow>\n        </value>\n        <value name=\"AMOUNT\">\n          <shadow type=\"math_number\" id=\"$E8jCr1ln#4ykRe?A.-{\">\n            <field name=\"NUM\">1</field>\n          </shadow>\n          <block type=\"variables_get\" id=\"W3)vI$+sC,kZbk1U[IRb\">\n            <field name=\"VAR\" id=\"nfN(I4\n<block type=\"before_purchase\" id=\"i-CIx.(Onm4?ihxzA}Y]\" x=\"0\" y=\"609\">\n    <statement name=\"BEFOREPURCHASE_STACK\">\n      <block type=\"controls_if\" id=\"Es!hhZ{Ws@eIL4YSTnGm\">\n        <value name=\"IF0\">\n          <block type=\"logic_compare\" id=\"rA2gdIE]XmZZP.f#r.y}\">\n            <field name=\"OP\">EQ</field>\n            <value name=\"A\">\n              <block type=\"last_digit\" id=\"~qBk-@f^k2$~cTw_O~lu\"></block>\n\n<!-- after_purchase structure -->\n<block type=\"after_purchase\" id=\"D^Jz1^n=2vtZku1vBN@;\" x=\"0\" y=\"861\">\n    <statement name=\"AFTERPURCHASE_STACK\">\n      <block type=\"controls_if\" id=\"MWfD@xu;F8=$W^m|3SAE\">\n        <mutation else=\"1\"></mutation>\n        <value name=\"IF0\">\n          <block type=\"contract_check_result\" id=\"~we^R9BWKW?k[/q~}PEo\">\n            <field name=\"CHECK_RESULT\">loss</field>\n          </block>\n        </value>\n        <statement name=\"DO0\">\n          <block type=\"notify\" id=\"A1C{t_TuE~UvZn#}.9^o\">\n            <field name=\"NOTIFICATION_TYPE\">error</field>\n            <field name=\"NOTIFICATION_SOUND\">error</field>\n            <value name=\"MESSAGE\">\n              <shadow type=\"text\" id=\"%m~b19cIWsS7^vq.mw63\">";
   const fullPrompt = "You are a Deriv DBot XML expert. Output ONLY a complete valid Deriv DBot XML."
     + "\n\n=== MANDATORY FORMAT RULES ===\n" + RULES
     + "\n\n=== VALID STRUCTURE SKELETON ===\n" + FORMAT_GUIDE
-    + "\n\n=== REAL DERIV BOT EXAMPLE (copy this pattern exactly) ===\n" + GOLDEN_EXAMPLE
     + "\n\n=== ORIGINAL BOT XML (excerpt) ===\n" + xmlSnippet
     + "\n\n=== LIVE MARKET DATA ===\n" + reportSnippet
     + "\n\n=== MARKET STATS ===\n" + ctxStr
@@ -917,7 +937,7 @@ async function generateImprovedBot(originalXml, marketContext, analysisReport) {
         "Content-Type": "application/json",
         "Authorization": "Bearer " + key,
         "HTTP-Referer": "https://deriv-oracle.vercel.app",
-        "X-Title": "DERIV-ORACLE",
+        "X-Title": "ROMANS 8:28 ORACLE",
       },
       body: JSON.stringify({
         model,
@@ -989,7 +1009,7 @@ function buildAnalysisReport(digits, ticks, liveStats, symbol) {
   const rf = ticks.length > 1 ? getRiseFallStats(ticks) : null;
   const ou = getOverUnderStats(digits, 4);
   const lines = [
-    "=== DERIV-ORACLE LIVE MARKET ANALYSIS ===",
+    "=== ROMANS 8:28 ORACLE — LIVE MARKET ANALYSIS ===",
     "Symbol: " + symbol + " | Ticks Analyzed: " + digits.length,
     "",
     "DIGIT FREQUENCY:",
@@ -1042,6 +1062,24 @@ export default function DerivOracle() {
   const [consecutiveLosses, setConsecutiveLosses] = useState(0);
   const [bestTradeType, setBestTradeType] = useState("MATCHES"); // track which type wins more
 
+
+
+  // ── PHASE 4: EXECUTE STATE ───────────────────────────────────────────────
+  const tradeWsRef = useRef(null);          // dedicated trade WebSocket
+  const tradeReqIdRef = useRef(1);          // incrementing request IDs
+  const pendingProposalRef = useRef(null);  // proposal awaiting confirmation
+  const [execArmed, setExecArmed] = useState(false);
+  const [execStake, setExecStake] = useState("10");
+  const [execMode, setExecMode] = useState("demo"); // "demo" | "real"
+  const [execTrades, setExecTrades] = useState([]);
+  const [execFiring, setExecFiring] = useState(false);
+  const [execLog, setExecLog] = useState("");
+  const [latencyMs, setLatencyMs] = useState(null);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [pendingExecSignal, setPendingExecSignal] = useState(null);
+  const [execSessionPnl, setExecSessionPnl] = useState(0);
+  const execTradesRef = useRef([]);
+  const lastExecTickRef = useRef(0);        // prevent double-firing on same tick
 
   // ── BOT ANALYZER STATE (Phase 3) ─────────────────────────────────────────
   const [botSubTab, setBotSubTab] = useState("upload");
@@ -1106,6 +1144,170 @@ export default function DerivOracle() {
   useEffect(() => { triggerAIRef.current = triggerAI; }, [triggerAI]);
 
   // ── WEBSOCKET CONNECTION ──────────────────────────────────────────────────
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PHASE 4 — TRADE EXECUTION ENGINE
+  // Dedicated WS for trading — NEVER shares the data stream.
+  // Flow: connectTradeWS → authorize → proposal → buy → track result
+  // Latency target: < 100ms proposal→buy round trip
+  // ══════════════════════════════════════════════════════════════════════════
+
+  const connectTradeWS = useCallback(() => {
+    if (tradeWsRef.current && tradeWsRef.current.readyState <= 1) return;
+    const ws = new WebSocket(DERIV_WS_URL);
+    ws.binaryType = "arraybuffer"; // fastest parse mode
+    tradeWsRef.current = ws;
+
+    ws.onopen = () => {
+      setExecLog("Trade WS open — authorizing...");
+      ws.send(JSON.stringify({ authorize: DERIV_TOKEN, req_id: 1 }));
+    };
+
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(
+        typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data)
+      );
+
+      if (msg.msg_type === "authorize") {
+        if (msg.error) { setExecLog("Auth error: " + msg.error.message); return; }
+        setExecLog("✓ Trade WS authorized — " + (msg.authorize?.loginid || "") + " — ready.");
+      }
+
+      if (msg.msg_type === "proposal") {
+        if (msg.error) {
+          setExecFiring(false);
+          setExecLog("✗ Proposal error: " + msg.error.message);
+          pendingProposalRef.current = null;
+          return;
+        }
+        // Immediately buy — this is the hot path, minimize object creation
+        const proposalId = msg.proposal.id;
+        const price = msg.proposal.ask_price;
+        const payout = msg.proposal.payout;
+        const t1 = Date.now();
+        pendingProposalRef.current = { proposalId, price, payout, t1 };
+        ws.send(JSON.stringify({ buy: proposalId, price, req_id: ++tradeReqIdRef.current }));
+        setExecLog("⚡ Proposal $" + price + " → Buying instantly...");
+      }
+
+      if (msg.msg_type === "buy") {
+        if (msg.error) {
+          setExecFiring(false);
+          setExecLog("✗ Buy error: " + msg.error.message);
+          pendingProposalRef.current = null;
+          return;
+        }
+        const rtt = pendingProposalRef.current ? Date.now() - pendingProposalRef.current.t1 : null;
+        if (rtt !== null) setLatencyMs(rtt);
+        const contract = msg.buy;
+        setExecLog("✓ Contract " + contract.contract_id + " purchased · RTT " + (rtt || "?") + "ms");
+        // Subscribe to contract updates
+        ws.send(JSON.stringify({
+          proposal_open_contracts: 1,
+          contract_id: contract.contract_id,
+          subscribe: 1,
+          req_id: ++tradeReqIdRef.current,
+        }));
+        // Add pending row to trade log
+        const newTrade = {
+          id: contract.contract_id,
+          time: new Date().toLocaleTimeString(),
+          digit: pendingProposalRef.current?.digit || "?",
+          stake: pendingProposalRef.current?.stake || execStake,
+          status: "PENDING",
+          pnl: null,
+          entrySpot: contract.entry_spot || "?",
+        };
+        execTradesRef.current = [newTrade, ...execTradesRef.current.slice(0, 99)];
+        setExecTrades([...execTradesRef.current]);
+        pendingProposalRef.current = null;
+        setExecFiring(false);
+      }
+
+      if (msg.msg_type === "proposal_open_contracts") {
+        const c = msg.proposal_open_contracts;
+        if (!c || c.is_sold !== 1) return; // not settled yet
+        const profit = parseFloat(c.profit) || 0;
+        const won = profit > 0;
+        const exitSpot = c.exit_tick_display_value || c.sell_spot || "?";
+        // Update the matching trade row
+        execTradesRef.current = execTradesRef.current.map(t =>
+          t.id === c.contract_id
+            ? { ...t, status: won ? "WIN" : "LOSS", pnl: profit, exitSpot }
+            : t
+        );
+        setExecTrades([...execTradesRef.current]);
+        setExecSessionPnl(prev => parseFloat((prev + profit).toFixed(2)));
+        setExecLog((won ? "✓ WIN" : "✗ LOSS") + " — P&L: " + (profit >= 0 ? "+" : "") + profit.toFixed(2) + " USD · exit " + exitSpot);
+        // Update real balance
+        if (tradeWsRef.current?.readyState === 1) {
+          tradeWsRef.current.send(JSON.stringify({ balance: 1, req_id: ++tradeReqIdRef.current }));
+        }
+      }
+
+      if (msg.msg_type === "balance" && msg.balance?.balance !== undefined) {
+        setBalance(parseFloat(msg.balance.balance).toFixed(2));
+      }
+    };
+
+    ws.onerror = () => setExecLog("⚠ Trade WS error — reconnecting...");
+    ws.onclose = () => setExecLog("Trade WS closed.");
+  }, [execStake]);
+
+  const disconnectTradeWS = useCallback(() => {
+    if (tradeWsRef.current) {
+      tradeWsRef.current.onclose = null;
+      tradeWsRef.current.close();
+      tradeWsRef.current = null;
+    }
+  }, []);
+
+  // ── FIRE TRADE ─────────────────────────────────────────────────────────────
+  // Called on every live tick when armed. Uses coldest digit as prediction.
+  // Guards: not already firing, min 20 ticks, armed, trade WS open.
+  const fireTrade = useCallback((currentDigits, currentTick) => {
+    if (!execArmed) return;
+    if (execFiring) return;
+    if (currentDigits.length < 20) return;
+    if (currentTick === lastExecTickRef.current) return; // same tick guard
+    const ws = tradeWsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setExecLog("⚠ Trade WS not open — reconnecting...");
+      connectTradeWS();
+      return;
+    }
+    const stake = parseFloat(execStake);
+    if (!stake || stake <= 0) { setExecLog("⚠ Invalid stake."); return; }
+
+    // Get coldest digit (best DIFFERS target) from live heatmap
+    const freq = getDigitFrequency(currentDigits);
+    const hc = getHotCold(freq);
+    const coldDigit = hc.cold.length > 0 ? hc.cold[0] : 5;
+
+    lastExecTickRef.current = currentTick;
+    setExecFiring(true);
+    setExecLog("⟳ Sending proposal — DIGITDIFF digit " + coldDigit + " stake $" + stake + "...");
+
+    const t0 = Date.now();
+    pendingProposalRef.current = { digit: coldDigit, stake, t0 };
+
+    ws.send(JSON.stringify({
+      proposal: 1,
+      amount: stake,
+      basis: "stake",
+      contract_type: "DIGITDIFF",
+      currency: "USD",
+      duration: 1,
+      duration_unit: "t",
+      symbol: symbol,
+      barrier: String(coldDigit),
+      req_id: ++tradeReqIdRef.current,
+    }));
+  }, [execArmed, execFiring, execStake, symbol, connectTradeWS]);
+
+  // Cleanup trade WS on unmount
+  useEffect(() => { return () => disconnectTradeWS(); }, [disconnectTradeWS]);
+
   const connectWS = useCallback((sym) => {
     // Close existing connection cleanly
     if (wsRef.current) {
@@ -1212,7 +1414,27 @@ export default function DerivOracle() {
           setPendingTrade(null);
         }
 
-        // Auto AI every 25 new ticks
+        // ── PHASE 4: Fire live trade on each tick when armed ──────────────
+        if (execArmed && !execFiring) {
+          fireTrade(getLastDigits(updated), tickIndexRef.current);
+        }
+
+        // ── PHASE 4: Fire live trade on each tick when armed ────────────
+        if (execArmed && !execFiring) {
+          fireTrade(getLastDigits(updated), tickIndexRef.current);
+        }
+
+        // ── PHASE 4: Fire live trade on each tick when armed ────────────
+        if (execArmed && !execFiring) {
+          fireTrade(getLastDigits(updated), tickIndexRef.current);
+        }
+
+        // ── PHASE 4: Fire live trade on each tick when armed ────
+        if (execArmed && !execFiring) {
+          fireTrade(getLastDigits(updated), tickIndexRef.current);
+        }
+
+  // Auto AI every 25 new ticks
         aiCounterRef.current += 1;
         if (autoAIRef.current && aiCounterRef.current % 25 === 0) {
           triggerAIRef.current && triggerAIRef.current(updated);
@@ -1461,16 +1683,11 @@ export default function DerivOracle() {
         try { indexRaw = await window.storage.get("bot-index"); } catch(e) {}
         if (indexRaw) return; // Already seeded
         // Seed the 4 validated Deriv bot XML files as reference bots
-        // Real validated Deriv bot XML files — stored as format references
-        const REPETEWIN_XML = "<xml xmlns=\"http://www.w3.org/1999/xhtml\" collection=\"false\">\n  <variables>\n    <variable type=\"\" id=\"X+ip0:wV!E!y#wA%Q@AI\">Lista de \u00daltimos D\u00edgitos</variable>\n    <variable type=\"\" id=\"9wj93D3cj3}jG0r6#T^S\">D\u00edgitos Analisados</variable>\n    <variable type=\"\" id=\"al[#OYc.+o-.scP8Q?Zy\">N\u00famero de d\u00edgitos da an\u00e1lise</variable>\n    <variable type=\"\" id=\"oP[#v(3b2|yR%,e!Z2,|\">Mesmo n\u00famero de d\u00edgitos</variable>\n    <variable type=\"\" id=\"?CK#J#P1yX%v!yB8Y2Zu\">VALOR INICIAL</variable>\n    <variable type=\"\" id=\"HPLRsY3QVqrjVIkNo6_0\">VALOR AP\u00d3S VENCER</variable>\n    <variable type=\"\" id=\"Y19%N$E*9O=Fgt~5xDUO\">SUA META HOJE \u00c9</variable>\n    <variable type=\"\" id=\"*p4]1v;d@262`Nr$7Za(\">M\u00c1XIMO DE PERDAS</variable>\n    <variable type=\"\" id=\"z@LjeUywf7FmpgRwdA]f\">DURA\u00c7\u00c3O DA OPERA\u00c7\u00c3O</variable>\n    <variable type=\"\" id=\"[M4KQ(FYDNk^t|~4|Kn(\">PAUSA AP\u00d3S LOSS (Em segundos)</variable>\n    <variable type=\"\" id=\"V*~Hp~-,xiPHQCUD@y^D\">ANALISAR QUANTOS D\u00cdGITOS</variable>\n    <variable type=\"\" id=\"8K]P^]JtwTibqVvU}9lj\">ENTRAR AP\u00d3S QUANTAS REPETI\u00c7\u00d5ES</variable>\n    <variable type=\"\" id=\"r(dD$6~vi-;!Gq]#zl1O\">MULTIPLICADOR DE MARTINGALE TRADICIONAL</variable>\n    <variable type=\"\" id=\"kN;jI`@@WyH1,;@R}J*{\">MULTIPLICADOR DE MARTINGALE PARCELADO</variable>\n    <variable type=\"\" id=\"^w*fYKuygs#h:GJp/+S+\">MARTINGALE AP\u00d3S VITORIA (Parcelado em 3x)</variable>\n    <variable type=\"\" id=\"BLqGiI=Qtz0RbzwO8^Ae\">MARTINGALE AP\u00d3S VITORIA (1x)</variable>\n    <variable type=\"\" id=\"^~gi|X({=.YG+OOcpl+i\">MARTINGALE AP\u00d3S LOSS PARCELADO (Parcelado 3x)</variable>\n    <variable type=\"\" id=\"j66+t.g/pbRD!5,9zC=%\">MARTINGALE TRADICIONAL</variable>\n    <variable type=\"\" id=\"SOf*%=2,6HLO|LH;O#`7\">FAZER SOROS</variable>\n    <variable type=\"\" id=\"24+s|1?R|X*bDM|^nm!9\">QUANTAS M\u00c3OS DE SOROS</variable>\n    <variable type=\"\" id=\"L)!rI/[?;(TYp3Bo,{?N\">Contador de Win</variable>\n    <variable type=\"\" id=\"x]b:xDy:%]6xM`K,!t-p\">Quant. de Repeti\u00e7\u00f5es</variable>\n    <variable type=\"\" id=\"x_uXJs8,GNt]U*wsQw8h\">VALOR INICIAL :</variable>\n    <variable type=\"\" id=\"x|jPtwh1R^=||%7LaX0y\">(SLDL) LDP</variable>\n    <variable type=\"\" id=\"$3`Zhpxh;0LRgH]azmew\">Contar o d\u00edgito do resultado</variable>\n    <variable type=\"\" id=\"=Do2I@@oIR-*,Jt,OM:-\">Quantas Repeti\u00e7\u00f5es Para Entrar na Ordem</variable>\n    <variable type=\"\" id=\"RN6pQFkcpv:iEEg+E]X^\">VALOR AP\u00d3S VENCER :</variable>\n    <variable type=\"\" id=\"39jyDZO14)[9k@9m1;vx\">Lista dos \u00daltimos D\u00edgitos</variable>\n    <variable type=\"\" id=\"}G,`;e!g|OoK75e/kj6)\">PAUSA AP\u00d3S LOSS (EM SEGUNDOS) :</variable>\n    <variable type=\"\" id=\"CpBF3l`}MAx1]bwzc@*c\">Contador de \u00daltimos D\u00edgitos</variable>\n    <variable type=\"\" id=\"D7,^F7c8[()bG;*jL^jU\">CONTADOR PADR\u00c3O DE LOSS</variable>\n    <variable type=\"\" id=\"?=#`tn+(A4pB^gEc[jLu\">SUA META HOJE \u00c9 :</variable>\n    <variable type=\"\" id=\"Ni#BNH.=;x|q+0d[aA^n\">ANALISAR QUANTOS D\u00cdGITOS ? :</variable>\n    <variable type=\"\" id=\"isLxvve+txXm_Wh|PpHl\">\u00daltimo D\u00edgito</variable>\n    <variable type=\"\" id=\"vOu;lj*W{|snjFQ);wZC\">Contar Digito do result2</\n<!-- ...truncated - full file validated on Deriv -->";
-        const DIFFER2_XML   = "<xml xmlns=\"http://www.w3.org/1999/xhtml\" collection=\"false\">\n  <variables>\n    <variable type=\"\" id=\"l#aqD7^J+*MS:!}r;gFJ\">_Target_Profit_</variable>\n    <variable type=\"\" id=\"[_FD47qMx^s5B`(HGHF^\">_Stop_Loss_</variable>\n    <variable type=\"\" id=\"eY0FqVt,=yze:`uYfL}}\">_First_Stake_</variable>\n    <variable type=\"\" id=\"PLDd`_Sj|^w,8CH@RwAr\">_Martingale_Factor_</variable>\n    <variable type=\"\" id=\"*(E/#ia|S#1Y!{+{|/xZ\">_Martingale_Level_</variable>\n    <variable type=\"\" id=\"dww#vF_KP-O#9#]3D.(n\">_Martingale_Start_After_</variable>\n    <variable type=\"\" id=\"JdDnU!SQ3=`qtJ:xl)fs\">_Virtual_Analyse_</variable>\n    <variable type=\"\" id=\"63pymID3|tBn45yH7Y1@\">_VLC_</variable>\n    <variable type=\"\" id=\"K)E3UqjdI:I*bWdf:TtW\">_TYPE_</variable>\n    <variable type=\"\" id=\"qa:G:2_ufn$PI0/F3d}:\">put [Result is Win] here</variable>\n    <variable type=\"\" id=\"S974xe=yHJZ[Iw(rWdMp\">put [Contract Detail : profit] here</variable>\n    <variable type=\"\" id=\"o!-lntGd4)Q~E(`/]XSR\">Report:Profit</variable>\n    <variable type=\"\" id=\"48t?~}2f6Pk54{OFbP-O\">Last_Digit_List</variable>\n    <variable type=\"\" id=\"BxkbEJ;Coe*l0xdM;xVA\">profit</variable>\n    <variable type=\"\" id=\"fK%.%0HwsjzXn-jm^M8I\">Continue</variable>\n    <variable type=\"\" id=\"G=r4G_A1C^sBx~h}-xU6\">_stake</variable>\n    <variable type=\"\" id=\"p]hDZ9|%E,0`[+0c[$GZ\">Report:TotalProfit</variable>\n    <variable type=\"\" id=\"LQs-k*q[ER:HaQOYv@$q\">TYPE</variable>\n    <variable type=\"\" id=\"I`3e}.LtkB4p+FdlLUef\">FirstStake</variable>\n    <variable type=\"\" id=\"6x?5RArVerIU$yn-rjie\">Report:Runs</variable>\n    <variable type=\"\" id=\"7`TqEjaz{?w8B9jtB7if\">PREDICATOR</variable>\n    <variable type=\"\" id=\"i@y^Bcb)8Sp56AiGGMX2\">TargetProfit</variable>\n    <variable type=\"\" id=\")kYN(dq9r8`_4$N3d%Dl\">win_count</variable>\n    <variable type=\"\" id=\"s#VuU4/L74Jk@v/Vyx~/\">loss_count</variable>\n    <variable type=\"\" id=\"gY0c;R0,_5r(-fLok.IZ\">Report:TotalLosses</variable>\n    <variable type=\"\" id=\"QJ]b*Z:h41bhv:;9Y`@5\">Report:TotalWins</variable>\n    <variable type=\"\" id=\"{;1vC+j`s?u7](_au+({\">Report:LowestBalance</variable>\n    <variable type=\"\" id=\"xtjIrkQ~cE1a/Imkb*-3\">Stoploss</variable>\n    <variable type=\"\" id=\"ria7)c9,_SgAnJ*N3?xm\">Report:LowestLoss</variable>\n    <variable type=\"\" id=\"*2^BCTTsN}PU[J]3mCDI\">MartiLossLevel</variable>\n    <variable type=\"\" id=\"cv{94@:{$QwW5lH`V_.w\">Report:LossInRow</variable>\n    <variable type=\"\" id=\"y)I},LO|a+v62c#J2Q{J\">VLC</variable>\n    <variable type=\"\" id=\"jX!?UwSkLh)9PjJIp/:[\">MartiFactor</variable>\n    <variable type=\"\" id=\"=#fKpS]A+C0;6w8=dbZu\">loss_level</variable>\n    <variable type=\"\" id=\"ckimc.7Wa@5l*9;]Cut`\">Report:Losses</variable>\n    <variable type=\"\" id=\"GecYOjzAY{20C^IQZ(wB\">MartiStart</variable>\n    <variable type=\"\" id=\"$b!=;.@~yi2^i:zIds3$\">Virtual_analyse</variable>\n    <variable type=\"\" id=\"oHh^-?xm07xUKZH:S,F!\">_profit</variable>\n    <variable type=\"\" id=\"ucw/zgL5M[aTZ7$?X(ql\">Report:WinsInRow</variable>\n    <variable type=\"\" id=\"hl3@,=82ut=fiK499N1D\">Report:Wins</variable>\n\n<!-- ...truncated - full file validated on Deriv -->";
-        const DIGITDIFF_P_XML = "<xml xmlns=\"http://www.w3.org/1999/xhtml\" collection=\"false\">\n  <variables>\n    <variable type=\"\" id=\"$#!Lr+Kb)?7?Y=g#uawG\">num4</variable>\n    <variable type=\"\" id=\"xCq})yRjt~7hZmI+;~fK\">thick26</variable>\n    <variable type=\"\" id=\"GYiy?v@WnvT%BAgL0J7S\">Aposta Inicial</variable>\n    <variable type=\"\" id=\"NF4F:F)/OD%/WGw?#p21\">Prediction</variable>\n    <variable type=\"\" id=\"wxn?5bpGfZuM2auxS|!Q\">thick25</variable>\n    <variable type=\"\" id=\"F4wur(a=}{e-X~0WBkHA\">Aposta ao Vencer</variable>\n    <variable type=\"\" id=\"NSvN3ysiE245;GS#]|kR\">thick24</variable>\n    <variable type=\"\" id=\"B1QULQFHhsY:UDFFic@Y\">Profit</variable>\n    <variable type=\"\" id=\"Mo|#^,VLe6GQw[On{D/B\">set0</variable>\n    <variable type=\"\" id=\"8Qw2gCOWG_)DM2Y:=k2U\">Max Erro</variable>\n    <variable type=\"\" id=\"9b}vG:)skuB(p|)!JVkm\">thick23</variable>\n    <variable type=\"\" id=\"[@?v{WKW?kV`+y6_QBO8\">Erro</variable>\n    <variable type=\"\" id=\"1_Cj:6]uDZP{g-u,yq%V\">percentage</variable>\n    <variable type=\"\" id=\"wm3V2SRsb.*H7~}h87BF\">thick22</variable>\n    <variable type=\"\" id=\"3DAJK|_+za(+no1:9sxw\">num0</variable>\n    <variable type=\"\" id=\"$CeF4Ry-FJho!i2GX|sD\">num1</variable>\n    <variable type=\"\" id=\"jp/qa8~BQc/oO:k9bpk.\">num2</variable>\n    <variable type=\"\" id=\"wkKF0dk9{Asb:|yWy28N\">num3</variable>\n    <variable type=\"\" id=\"FT0~-Ekf*Qyoj|~h|A+v\">num5</variable>\n    <variable type=\"\" id=\"##to44~=.+gn*w!7[YK*\">num6</variable>\n    <variable type=\"\" id=\"k#uDj?ji`I*uGD9Ta0ls\">num7</variable>\n    <variable type=\"\" id=\"(de-+rqZ.hC.(gW2hD3t\">num8</variable>\n    <variable type=\"\" id=\"S};R_EvJXkU1[oekSsx.\">num9</variable>\n    <variable type=\"\" id=\"Bcb^PFt~f305Qk|vy+=A\">thick21</variable>\n    <variable type=\"\" id=\"+HJ0|~zQZ4vq)A.-k7]x\">thick20</variable>\n    <variable type=\"\" id=\"=K)D5LCl,epxK0e-~SGK\">thick19</variable>\n    <variable type=\"\" id=\"PdAjG1!PKtgQPol`S!QZ\">thick18</variable>\n    <variable type=\"\" id=\"[jty#{3V~9~aZO.]T)$@\">time</variable>\n    <variable type=\"\" id=\"AV{g9h:y.tJw9F#xUP^e\">thick17</variable>\n    <variable type=\"\" id=\"+Ik;REU0I{N*1h.T$qt)\">thick16</variable>\n    <variable type=\"\" id=\"{n_)!|zf}.|$E/c8qq33\">thick15</variable>\n    <variable type=\"\" id=\"DH3+6toh#S`.qN=$F`KP\">thick14</variable>\n    <variable type=\"\" id=\"631E%?I36mE5v4u5SwG3\">thick13</variable>\n    <variable type=\"\" id=\"[Q_P%9O+SCY3RHn5+BL@\">thick12</variable>\n    <variable type=\"\" id=\"_^^2a4OqAo@;;D:^(Dn`\">thick11</variable>\n    <variable type=\"\" id=\"sn@cz[0:pcAhD@eR|YTd\">thick10</variable>\n    <variable type=\"\" id=\"l5DFmU7vzj|,o|!0*r?[\">thick9</variable>\n    <variable type=\"\" id=\"[*gVA1y]fd9MV#hZUlW0\">thick8</variable>\n    <variable type=\"\" id=\"*bhR7z1UpK~740R!,dhK\">thick7</variable>\n    <variable type=\"\" id=\"B{g2Uwu9;PjNkkY*4tCe\">thick6</variable>\n    <variable type=\"\" id=\"?GSq{02$MQ*RjeA_[8=D\">thick5</variable>\n    <variable type=\"\" id=\"+U(yh3QM~-#s~7$)5hD|\">thick4</variable>\n    <variable type=\"\" id=\"JX=NDaO$pb*xe!z){2kT\">thick3</variable>\n    <variable type=\"\" id=\"O9;Xw)b/Gowe3KF/havM\">thick2</variable>\n \n<!-- ...truncated - full file validated on Deriv -->";
-        const OVER_XML      = "<xml xmlns=\"http://www.w3.org/1999/xhtml\" collection=\"false\">\n  <variables>\n    <variable type=\"\" id=\"3C@HUF)?z(zn8g3GPaNd\">TARGET PROFIT</variable>\n    <variable type=\"\" id=\"/|o~W%gQIAM#UHZO!zA*\">STAKE_MODAL</variable>\n    <variable type=\"\" id=\"nfN(I4pYa%!hdG-=ekrk\">Initial Stake</variable>\n    <variable type=\"\" id=\"~12olgeNy)D^x^u7$b{o\">PREDIKSI</variable>\n    <variable type=\"\" id=\"+e9-IVuJ/mv#4%/,MX2r\">STOP_LOSS</variable>\n    <variable type=\"\" id=\"WB^wGp{On}ZKq/4LK4Ca\">MARTI</variable>\n  </variables>\n  <block type=\"trade\" id=\"xgH69|xFn9=70w.*3Vo@\" x=\"0\" y=\"0\">\n    <field name=\"MARKET_LIST\">synthetic_index</field>\n    <field name=\"SUBMARKET_LIST\">random_index</field>\n    <field name=\"SYMBOL_LIST\">R_10</field>\n    <field name=\"TRADETYPECAT_LIST\">digits</field>\n    <field name=\"TRADETYPE_LIST\">overunder</field>\n    <field name=\"TYPE_LIST\">DIGITOVER</field>\n    <field name=\"CANDLEINTERVAL_LIST\">60</field>\n    <field name=\"TIME_MACHINE_ENABLED\">FALSE</field>\n    <field name=\"RESTARTONERROR\">TRUE</field>\n    <statement name=\"INITIALIZATION\">\n      <block type=\"variables_set\" id=\"Xi/7unh.Wda86Y+ho3di\">\n        <field name=\"VAR\" id=\"3C@HUF)?z(zn8g3GPaNd\" variabletype=\"\">TARGET PROFIT</field>\n        <value name=\"VALUE\">\n          <block type=\"math_number\" id=\"6[{b4,~Ah7?6uSJYqr4@\">\n            <field name=\"NUM\">5</field>\n          </block>\n        </value>\n        <next>\n          <block type=\"variables_set\" id=\"c-||aYScR/g!vo~{/X[e\">\n            <field name=\"VAR\" id=\"/|o~W%gQIAM#UHZO!zA*\" variabletype=\"\">STAKE_MODAL</field>\n            <value name=\"VALUE\">\n              <block type=\"math_number\" id=\"g~[uqoN*x_reSg69qAb(\">\n                <field name=\"NUM\">0.5</field>\n              </block>\n            </value>\n            <next>\n              <block type=\"variables_set\" id=\"tSdo88{{x|bkDDqQ5[PB\">\n                <field name=\"VAR\" id=\"+e9-IVuJ/mv#4%/,MX2r\" variabletype=\"\">STOP_LOSS</field>\n                <value name=\"VALUE\">\n                  <block type=\"math_number\" id=\"aQF}bz#EW1!ExO/XqCjP\">\n                    <field name=\"NUM\">50</field>\n                  </block>\n                </value>\n                <next>\n                  <block type=\"variables_set\" id=\"Au[U|iv$}Dv%Oao?|=T?\">\n                    <field name=\"VAR\" id=\"WB^wGp{On}ZKq/4LK4Ca\" variabletype=\"\">MARTI</field>\n                    <value name=\"VALUE\">\n                      <block type=\"math_number\" id=\"o5g6@SNiXs|W~D`t9~dm\">\n                        <field name=\"NUM\">1.5</field>\n                      </block>\n                    </value>\n                    <next>\n                      <block type=\"variables_set\" id=\"e1s%c0-U@@6w%FE6ER#w\">\n                        <field name=\"VAR\" id=\"~12olgeNy)D^x^u7$b{o\" variabletype=\"\">PREDIKSI</field>\n                        <value name=\"VALUE\">\n                          <block type=\"math_number\" id=\"I]astph|SH-$GT,j|bqc\">\n                            <field name=\"NUM\">3</field>\n                          </block>\n                        </value>\n                        <next>\n                          <block type=\"variables_set\" id=\"XkO1?ufjD(|LFlLW(E[)\" collapsed=\"true\">\n                            <field name=\"VAR\" id=\"nfN(I4pYa%!hdG-=ekrk\" variabletype=\"\">Initial Stake</field>\n                            <value name=\"VALUE\">\n                              <block type=\"variables_get\" id=\"=5^x@X=lSNbjZLM{ieBe\">\n                                <field name=\"VAR\" id=\"/|o~W%gQIAM#UHZO!zA*\" variabletype=\"\">STAKE_MODAL</field>\n                              </block>\n                            </value>\n                          </block>\n                        </next>\n                      </block>\n                    </next>\n                  </block>\n                </next>\n              </block>\n            </next>\n          </block>\n        </next>\n      </block>\n    </statement>\n    <statement name=\"SUBMARKET\">\n      <block type=\"tradeOptions\" id=\"zB3=PkD2eZ%X%(f9v-*E\">\n        <field name=\"DURATIONTYPE_LIST\">t</field>\n        <field name=\"CURRENCY_LIST\">USD</field>\n        <field name=\"BARRIEROFFSETTYPE_LIST\">+</field>\n        <field name=\"SECONDBARRIEROFFSETTYPE_LIST\">-</field>\n        <value name=\"DURATION\">\n          <shadow type=\"math_number\" id=\"5V-_Pm5hl%K|AyV01I2o\">\n            <field name=\"NUM\">2</field>\n          </shadow>\n        </value>\n        <value name=\"AMOUNT\">\n          <shadow type=\"math_number\" id=\"$E8jCr1ln#4ykRe?A.-{\">\n            <field name=\"NUM\">1</field>\n          </shadow>\n          <block type=\"variables_get\" id=\"W3)vI$+sC,kZbk1U[IRb\">\n            <field name=\"VAR\" id=\"nfN(I4pYa%!hdG-=ekrk\" variabletype=\"\">Initial Stake</field>\n          </block>\n        </value>\n        <value name=\"PREDICTION\">\n          <shadow type=\"math_number\" id=\"/^!rgI/6k_8lZnmSf41M\">\n            <field name=\"NUM\">0</field>\n          </shadow>\n          <block type=\"variables_get\" id=\"NsP7qJW_9ZB8Q#kXII|8\">\n            <field name=\"VAR\" id=\"~12olgeNy)D^x^u7$b{o\" variabletype=\"\">PREDIKSI</field>\n          </block>\n        </value>\n      </block>\n    </statement>\n  </block>\n  <block type=\"before_purchase\" id=\"i-CIx.(Onm4?ihxzA}Y]\" x=\"0\" y=\"609\">\n    <statement name=\"BEFOREPURCHASE_STACK\">\n      <block type=\"controls_if\" id=\"Es!hhZ{Ws@eIL4YSTnGm\">\n        <value name=\"IF0\">\n          <block type=\"logic_compare\" id=\"rA2gdIE]XmZZP.f#r.y}\">\n            <field name=\"OP\">EQ</field>\n            <value name=\"A\">\n              <block type=\"last_digit\" id=\"~qBk-@f^k2$~cTw_O~lu\"></block>\n            </value>\n            <value name=\"B\">\n              <block type=\"math_number\" id=\"4-l`c/`.}_=##UoWupvT\">\n                <field name=\"NUM\">1</field>\n              </block>\n            </value>\n          </block>\n        </value>\n        <statement name=\"DO0\">\n          <block type=\"notify\" id=\"PP:LpsqGXW=k-{ZZmWEJ\">\n            <field name=\"NOTIFICATION_TYPE\">info</field>\n            <field name=\"NOTIFICATION_SOUND\">earned-money</field>\n            <value name=\"MESSAGE\">\n              <shadow type=\"text\" id=\"tmhABSsIZ5TsRtLrl47E\">\n                <field name=\"TEXT\">abc</field>\n              </shadow>\n              <block type=\"text\" id=\"4-?5*k@6^:rx9P8A%`G@\">\n                <field name=\"TEXT\">PLAY ON BOT</field>\n              </block>\n            </value>\n            <next>\n              <block type=\"purchase\" id=\"W6q#Z-I3q3d[d3-`S[dS\">\n                <field name=\"PURCHASE_LIST\">DIGITOVER</field>\n              </block>\n            </next>\n          </block>\n        </statement>\n      </block>\n    </statement>\n  </block>\n  <block type=\"tick_analysis\" id=\"jP:vU]LS#wRxvo[VH4,C\" collapsed=\"true\" x=\"0\" y=\"808\">\n    <statement name=\"TICKANALYSIS_STACK\">\n      <block type=\"controls_if\" id=\"joWT)oGv%btN(WB(lA:^\">\n        <mutation elseif=\"1\"></mutation>\n        <value name=\"IF0\">\n          <block type=\"logic_operation\" id=\"PvEeTdFyq?N:Jv3W[Aa[\" inline=\"false\">\n            <field name=\"OP\">AND</field>\n            <value name=\"A\">\n              <block type=\"check_direction\" id=\"aWxa`}{:iw1|gMJUL:5r\">\n                <field name=\"CHECK_DIRECTION\">rise</field>\n              </block>\n            </value>\n            <value name=\"B\">\n              <block type=\"logic_negate\" id=\"N_.qwD{kotN9Z{mgib!D\">\n                <value name=\"BOOL\">\n                  <block type=\"is_candle_black\" id=\"hC{j*:MTsza];QYTbNiE\">\n                    <value name=\"OHLCOBJ\">\n                      <block type=\"get_ohlc\" id=\"._zQZ]glTjSpl,yzJ}zW\">\n                        <field name=\"CANDLEINTERVAL_LIST\">default</field>\n                        <value name=\"CANDLEINDEX\">\n                          <shadow type=\"math_number\" id=\"sSeiY1Nv],beNJAGe~)(\">\n                            <field name=\"NUM\">1</field>\n                          </shadow>\n                        </value>\n                      </block>\n                    </value>\n                  </block>\n                </value>\n              </block>\n            </value>\n          </block>\n        </value>\n        <statement name=\"DO0\">\n          <block type=\"notify\" id=\"%lH)+Zq,eHCn(PCV8,O?\">\n            <field name=\"NOTIFICATION_TYPE\">info</field>\n            <field name=\"NOTIFICATION_SOUND\">silent</field>\n            <value name=\"MESSAGE\">\n              <shadow type=\"text\" id=\"gfqy?,1$@@%PTH_jS$*Q\">\n                <field name=\"TEXT\">UP</field>\n              </shadow>\n              <block type=\"text_join\" id=\"`n9%U+]bIj1gO%*,@LWh\">\n                <mutation items=\"3\"></mutation>\n                <value name=\"ADD0\">\n                  <block type=\"text\" id=\"@)=-jet=Y)~%.-:N0i)C\">\n                    <field name=\"TEXT\">UP : \u25b2</field>\n                  </block>\n                </value>\n                <value name=\"ADD1\">\n                  <block type=\"text\" id=\"DIm4CV=pA/@(Ql%;5e+,\">\n                    <field name=\"TEXT\"> [] CANDLE HIJAU [] </field>\n                  </block>\n                </value>\n                <value name=\"ADD2\">\n                  <block type=\"last_digit\" id=\"hRx@3-znjKj$;C=3$%:%\"></block>\n                </value>\n              </block>\n            </value>\n          </block>\n        </statement>\n        <value name=\"IF1\">\n          <block type=\"logic_operation\" id=\"du0t[#=$Gw7N;M%!1~,7\" inline=\"false\">\n            <field name=\"OP\">AND</field>\n            <value name=\"A\">\n              <block type=\"check_direction\" id=\"r~A]4,4ixNqh^0wigIdS\">\n                <field name=\"CHECK_DIRECTION\">fall</field>\n              </block>\n            </value>\n            <value name=\"B\">\n              <block type=\"logic_negate\" id=\"Fghz^0SjAm_f8:b`O)wg\">\n                <value name=\"BOOL\">\n                  <block type=\"is_candle_black\" id=\"qq+)]6C|7Y4JMgx8Tfj+\">\n                    <value name=\"OHLCOBJ\">\n                      <block type=\"get_ohlc\" id=\"FL1VveG.Q%40KL@bsLF9\">\n                        <field name=\"CANDLEINTERVAL_LIST\">default</field>\n                        <value name=\"CANDLEINDEX\">\n                          <shadow type=\"math_number\" id=\"@JY{Cy_4p7xVW+*KKZe.\">\n                            <field name=\"NUM\">1</field>\n                          </shadow>\n                        </value>\n                      </block>\n                    </value>\n                  </block>\n                </value>\n              </block>\n            </value>\n          </block>\n        </value>\n        <statement name=\"DO1\">\n          <block type=\"notify\" id=\"[oJGDr]jKXLzLyZew!Ip\">\n            <field name=\"NOTIFICATION_TYPE\">error</field>\n            <field name=\"NOTIFICATION_SOUND\">silent</field>\n            <value name=\"MESSAGE\">\n              <shadow type=\"text\" id=\"_t7nF%a.%#49oOa,ZY]/\">\n                <field name=\"TEXT\">DOWN</field>\n              </shadow>\n              <block type=\"text_join\" id=\",(YqkjOfg^8av)ny,[@D\">\n                <mutation items=\"3\"></mutation>\n                <value name=\"ADD0\">\n                  <block type=\"text\" id=\"{^~}v.v%`FFgY4E95[#O\">\n                    <field name=\"TEXT\">DOWN : \u25bc</field>\n                  </block>\n                </value>\n                <value name=\"ADD1\">\n                  <block type=\"text\" id=\"]uTOOHY=SC8iDy_32^y)\">\n                    <field name=\"TEXT\"> [] CANDLE HIJAU [] </field>\n                  </block>\n                </value>\n                <value name=\"ADD2\">\n                  <block type=\"last_digit\" id=\"(_Z+JeRuEy%bYMbIpAVu\"></block>\n                </value>\n              </block>\n            </value>\n          </block>\n        </statement>\n        <next>\n          <block type=\"controls_if\" id=\"_e0hsN%!;:oX*dY]X4.K\">\n            <mutation elseif=\"1\"></mutation>\n            <value name=\"IF0\">\n              <block type=\"logic_operation\" id=\"U:Bf3jifwQR.54TwWg3y\" inline=\"false\">\n                <field name=\"OP\">AND</field>\n                <value name=\"A\">\n                  <block type=\"check_direction\" id=\"A$}bQ/:E-Ew4ktZ!R,jg\">\n                    <field name=\"CHECK_DIRECTION\">rise</field>\n                  </block>\n                </value>\n                <value name=\"B\">\n                  <block type=\"is_candle_black\" id=\"22q{h;Zt-Z;SIm+~TRM%\">\n                    <value name=\"OHLCOBJ\">\n                      <block type=\"get_ohlc\" id=\"r%9Hk34uzya{i4o.QBXJ\">\n                        <field name=\"CANDLEINTERVAL_LIST\">default</field>\n                        <value name=\"CANDLEINDEX\">\n                          <shadow type=\"math_number\" id=\"e6O^$$Mgs7[|N~r4ol|J\">\n                            <field name=\"NUM\">1</field>\n                          </shadow>\n                        </value>\n                      </block>\n                    </value>\n                  </block>\n                </value>\n              </block>\n            </value>\n            <statement name=\"DO0\">\n              <block type=\"notify\" id=\"?H/SOQ:5gXQqui^^*c4(\">\n                <field name=\"NOTIFICATION_TYPE\">info</field>\n                <field name=\"NOTIFICATION_SOUND\">silent</field>\n                <value name=\"MESSAGE\">\n                  <shadow type=\"text\" id=\"gfqy?,1$@@%PTH_jS$*Q\">\n                    <field name=\"TEXT\">UP</field>\n                  </shadow>\n                  <block type=\"text_join\" id=\"(h?B~RB*]I=!#-)UFXyv\">\n                    <mutation items=\"3\"></mutation>\n                    <value name=\"ADD0\">\n                      <block type=\"text\" id=\"3zRb(2v`rj5SdZKYp#:K\">\n                        <field name=\"TEXT\">UP : \u25b2</field>\n                      </block>\n                    </value>\n                    <value name=\"ADD1\">\n                      <block type=\"text\" id=\"=;UNrnhP.e^o+^V_*Dv-\">\n                        <field name=\"TEXT\"> [] CANDLE MERAH [] </field>\n                      </block>\n                    </value>\n                    <value name=\"ADD2\">\n                      <block type=\"last_digit\" id=\"+@+_5`c)NhXird.qFD=!\"></block>\n                    </value>\n                  </block>\n                </value>\n              </block>\n            </statement>\n            <value name=\"IF1\">\n              <block type=\"logic_operation\" id=\"!s$#T;,d-CRWH^~umI/+\" inline=\"false\">\n                <field name=\"OP\">AND</field>\n                <value name=\"A\">\n                  <block type=\"check_direction\" id=\"~#Dmkb.~ii*[[@oP$p)R\">\n                    <field name=\"CHECK_DIRECTION\">fall</field>\n                  </block>\n                </value>\n                <value name=\"B\">\n                  <block type=\"is_candle_black\" id=\"}`=I9gwZG=NMIQGB.B=:\">\n                    <value name=\"OHLCOBJ\">\n                      <block type=\"get_ohlc\" id=\"v47rF^I$mYR%{4{-rZcw\">\n                        <field name=\"CANDLEINTERVAL_LIST\">default</field>\n                        <value name=\"CANDLEINDEX\">\n                          <shadow type=\"math_number\" id=\"q%R@b@[Pkj?K{Sa4IR=y\">\n                            <field name=\"NUM\">1</field>\n                          </shadow>\n                        </value>\n                      </block>\n                    </value>\n                  </block>\n                </value>\n              </block>\n            </value>\n            <statement name=\"DO1\">\n              <block type=\"notify\" id=\"mFljqZ6%?:)Loy1ZK6FD\">\n                <field name=\"NOTIFICATION_TYPE\">error</field>\n                <field name=\"NOTIFICATION_SOUND\">silent</field>\n                <value name=\"MESSAGE\">\n                  <shadow type=\"text\" id=\"_t7nF%a.%#49oOa,ZY]/\">\n                    <field name=\"TEXT\">DOWN</field>\n                  </shadow>\n                  <block type=\"text_join\" id=\"Hit5or#H$C4z%sx{c/Nk\">\n                    <mutation items=\"3\"></mutation>\n                    <value name=\"ADD0\">\n                      <block type=\"text\" id=\"3dMZO|6g*a[0tEsr|p^4\">\n                        <field name=\"TEXT\">DOWN : \u25bc</field>\n                      </block>\n                    </value>\n                    <value name=\"ADD1\">\n                      <block type=\"text\" id=\".LToP`mR=[,CXoVb^vAW\">\n                        <field name=\"TEXT\"> [] CANDLE MERAH [] </field>\n                      </block>\n                    </value>\n                    <value name=\"ADD2\">\n                      <block type=\"last_digit\" id=\"M2h~Y^}IjV3sdCfqmj.)\"></block>\n                    </value>\n                  </block>\n                </value>\n              </block>\n            </statement>\n          </block>\n        </next>\n      </block>\n    </statement>\n  </block>\n  <block type=\"after_purchase\" id=\"D^Jz1^n=2vtZku1vBN@;\" x=\"0\" y=\"861\">\n    <statement name=\"AFTERPURCHASE_STACK\">\n      <block type=\"controls_if\" id=\"MWfD@xu;F8=$W^m|3SAE\">\n        <mutation else=\"1\"></mutation>\n        <value name=\"IF0\">\n          <block type=\"contract_check_result\" id=\"~we^R9BWKW?k[/q~}PEo\">\n            <field name=\"CHECK_RESULT\">loss</field>\n          </block>\n        </value>\n        <statement name=\"DO0\">\n          <block type=\"notify\" id=\"A1C{t_TuE~UvZn#}.9^o\">\n            <field name=\"NOTIFICATION_TYPE\">error</field>\n            <field name=\"NOTIFICATION_SOUND\">error</field>\n            <value name=\"MESSAGE\">\n              <shadow type=\"text\" id=\"%m~b19cIWsS7^vq.mw63\">\n                <field name=\"TEXT\">KONDISI TREND SIDEWAY.!!  HENTIKAN BOT ATAU GANTI MARKET</field>\n              </shadow>\n              <block type=\"text_join\" id=\"fR/vtn,bE0e^@l$V8GYi\">\n                <mutation items=\"3\"></mutation>\n                <value name=\"ADD0\">\n                  <block type=\"text\" id=\"/Q~cr]_;lIG%exeR+GDW\">\n                    <field name=\"TEXT\">LOST $ </field>\n                  </block>\n                </value>\n                <value name=\"ADD1\">\n                  <block type=\"math_single\" id=\"~*}G:a@Jr0Lc_OkEa6PT\">\n                    <field name=\"OP\">ABS</field>\n                    <value name=\"NUM\">\n                      <shadow type=\"math_number\" id=\"GleSn`9j7Cm7/dqg}FIA\">\n                        <field name=\"NUM\">9</field>\n                      </shadow>\n                      <block type=\"read_details\" id=\"`T=SI,$;QP.$1;l)f*@K\">\n                        <field name=\"DETAIL_INDEX\">4</field>\n                      </block>\n                    </value>\n                  </block>\n                </value>\n                <value name=\"ADD2\">\n                  <block type=\"text\" id=\"^]Bk_K`Mlj=;d#j?nQ{#\">\n                    <field name=\"TEXT\"> AJA [] </field>\n                  </block>\n                </value>\n              </block>\n            </value>\n            <next>\n              <block type=\"math_change\" id=\"gPvEt}Pk-nZ,-C@.T;d;\">\n                <field name=\"VAR\" id=\"nfN(I4pYa%!hdG-=ekrk\" variabletype=\"\">Initial Stake</field>\n                <value name=\"DELTA\">\n                  <shadow type=\"math_number\" id=\"5M3[cW:{%(wI5rvg~W/j\">\n                    <field name=\"NUM\">1</field>\n                  </shadow>\n                  <block type=\"math_single\" id=\"us)XCcy5?qg)ajF|d_cf\">\n                    <field name=\"OP\">ABS</field>\n                    <value name=\"NUM\">\n                      <shadow type=\"math_number\" id=\"g`7h;}T)P@YAo2a{GF1N\">\n                        <field name=\"NUM\">9</field>\n                      </shadow>\n                      <block type=\"math_arithmetic\" id=\"}V_S-)x*lfl8#|atJ_mk\">\n                        <field name=\"OP\">MULTIPLY</field>\n                        <value name=\"A\">\n                          <shadow type=\"math_number\" id=\";,4DC`1|3=X7y@)cCq-`\">\n                            <field name=\"NUM\">1</field>\n                          </shadow>\n                          <block type=\"read_details\" id=\"Kp*mR?/`8QTIB(k)vi~I\">\n                            <field name=\"DETAIL_INDEX\">4</field>\n                          </block>\n                        </value>\n                        <value name=\"B\">\n                          <shadow type=\"math_number\" id=\"iXqYk9o)sJ_=$mBKvUz!\">\n                            <field name=\"NUM\">1.05</field>\n                          </shadow>\n                          <block type=\"variables_get\" id=\",663dU;xJ`%:r?S[P-+b\">\n                            <field name=\"VAR\" id=\"WB^wGp{On}ZKq/4LK4Ca\" variabletype=\"\">MARTI</field>\n                          </block>\n                        </value>\n                      </block>\n                    </value>\n                  </block>\n                </value>\n              </block>\n            </next>\n          </block>\n        </statement>\n        <statement name=\"ELSE\">\n          <block type=\"notify\" id=\"w7N#IlRarY,(Xo*6ct.a\">\n            <field name=\"NOTIFICATION_TYPE\">info</field>\n            <field name=\"NOTIFICATION_SOUND\">earned-money</field>\n            <value name=\"MESSAGE\">\n              <shadow type=\"text\" id=\"%CVs|4Gu8q12EK~Ipf^/\">\n                <field name=\"TEXT\">KONDISI TREND SIDEWAY.!!  HENTIKAN BOT ATAU GANTI MARKET</field>\n              </shadow>\n              <block type=\"text_join\" id=\"UW:t77Ffa5!Fa}bBYivz\">\n                <mutation items=\"2\"></mutation>\n                <value name=\"ADD0\">\n                  <block type=\"text\" id=\"M}+xpZx`OkTQL,KEvr{o\">\n                    <field name=\"TEXT\">ALHAMDULILLAH PROFIT = $ </field>\n                  </block>\n                </value>\n                <value name=\"ADD1\">\n                  <block type=\"read_details\" id=\"EX7nWxp9L6FB@Q!)~f{t\">\n                    <field name=\"DETAIL_INDEX\">4</field>\n                  </block>\n                </value>\n              </block>\n            </value>\n            <next>\n              <block type=\"variables_set\" id=\"KmW5t5vChmNlj*O%:[^H\">\n                <field name=\"VAR\" id=\"nfN(I4pYa%!hdG-=ekrk\" variabletype=\"\">Initial Stake</field>\n                <value name=\"VALUE\">\n                  <block type=\"variables_get\" id=\"ccnQ7l$BRa^/{;,{x~a#\">\n                    <field name=\"VAR\" id=\"/|o~W%gQIAM#UHZO!zA*\" variabletype=\"\">STAKE_MODAL</field>\n                  </block>\n                </value>\n              </block>\n            </next>\n          </block>\n        </statement>\n        <next>\n          <block type=\"controls_if\" id=\"x]wtt#@8_5_u97!zaI?M\">\n            <mutation elseif=\"1\" else=\"1\"></mutation>\n            <value name=\"IF0\">\n              <block type=\"logic_operation\" id=\"9jpE.-|$Ne$(|QX-X7Ja\">\n                <field name=\"OP\">AND</field>\n                <value name=\"A\">\n                  <block type=\"math_number_property\" id=\"yW1^m!z(h%;m}Vfe#r@^\">\n                    <mutation divisor_input=\"false\"></mutation>\n                    <field name=\"PROPERTY\">NEGATIVE</field>\n                    <value name=\"NUMBER_TO_CHECK\">\n                      <shadow type=\"math_number\" id=\"2TJ^lPjT8MrR^:6Ghug=\">\n                        <field name=\"NUM\">0</field>\n                      </shadow>\n                      <block type=\"total_profit\" id=\"uqlDU#QMdm-s]jyv]$B#\"></block>\n                    </value>\n                  </block>\n                </value>\n                <value name=\"B\">\n                  <block type=\"logic_compare\" id=\"mrZXmIf1M3D#D?y=JbT?\">\n                    <field name=\"OP\">GTE</field>\n                    <value name=\"A\">\n                      <block type=\"math_single\" id=\"H^KAC0A$VO^a:/J[+q}g\">\n                        <field name=\"OP\">ABS</field>\n                        <value name=\"NUM\">\n                          <shadow type=\"math_number\" id=\"(rCiW:kP-Kx+n[/lS.n{\">\n                            <field name=\"NUM\">9</field>\n                          </shadow>\n                          <block type=\"total_profit\" id=\"G[25$kY~T~gCVfYR+0gT\"></block>\n                        </value>\n                      </block>\n                    </value>\n                    <value name=\"B\">\n                      <block type=\"variables_get\" id=\"kMaqW~2,vwv=ESaSZV8W\">\n                        <field name=\"VAR\" id=\"+e9-IVuJ/mv#4%/,MX2r\" variabletype=\"\">STOP_LOSS</field>\n                      </block>\n                    </value>\n                  </block>\n                </value>\n              </block>\n            </value>\n            <statement name=\"DO0\">\n              <block type=\"text_print\" id=\"!7NiL,!:A+26$;ddTQA%\">\n                <value name=\"TEXT\">\n                  <shadow type=\"text\" id=\"eZUb-P^OKXwOD]NR4c~?\">\n                    <field name=\"TEXT\">abc</field>\n                  </shadow>\n                  <block type=\"text_join\" id=\"jG4QhkVO0H8aQJR6$Fbn\">\n                    <mutation items=\"2\"></mutation>\n                    <value name=\"ADD0\">\n                      <block type=\"text\" id=\"wGDOy/6|[~/y+DEgUVyd\">\n                        <field name=\"TEXT\">Loss!! No Problem</field>\n                      </block>\n                    </value>\n                    <value name=\"ADD1\">\n                      <block type=\"math_single\" id=\"qp)ri$iTf|.Fv#7_0r=E\">\n                        <field name=\"OP\">ABS</field>\n                        <value name=\"NUM\">\n                          <shadow type=\"math_number\" id=\"(rCiW:kP-Kx+n[/lS.n{\">\n                            <field name=\"NUM\">9</field>\n                          </shadow>\n                          <block type=\"total_profit\" id=\"s}QwbK*GYx/qP9=:,v%!\"></block>\n                        </value>\n                      </block>\n                    </value>\n                  </block>\n                </value>\n              </block>\n            </statement>\n            <value name=\"IF1\">\n              <block type=\"logic_compare\" id=\"09xbI)b?+bZ_($~oM`g0\">\n                <field name=\"OP\">GTE</field>\n                <value name=\"A\">\n                  <block type=\"total_profit\" id=\"p0)!Pu);zW*:$OwI.GdH\"></block>\n                </value>\n                <value name=\"B\">\n                  <block type=\"variables_get\" id=\"KE^;=^{}E#+]0^1PG,$P\">\n                    <field name=\"VAR\" id=\"3C@HUF)?z(zn8g3GPaNd\" variabletype=\"\">TARGET PROFIT</field>\n                  </block>\n                </value>\n              </block>\n            </value>\n            <statement name=\"DO1\">\n              <block type=\"text_print\" id=\"kS:0E.8[k#l_,ofl;r5.\">\n                <value name=\"TEXT\">\n                  <shadow type=\"text\" id=\"eZUb-P^OKXwOD]NR4c~?\">\n                    <field name=\"TEXT\">abc</field>\n                  </shadow>\n                  <block type=\"text_join\" id=\"+Wa/G#bE=`+DK0;,_ZBN\">\n                    <mutation items=\"3\"></mutation>\n                    <value name=\"ADD0\">\n                      <block type=\"text\" id=\"2_j]n=}b*JXgR/_Y1TA{\">\n                        <field name=\"TEXT\">Asik M-POK Kecolong $ </field>\n                      </block>\n                    </value>\n                    <value name=\"ADD1\">\n                      <block type=\"total_profit\" id=\"!NQxO^Z;IMww7*=pdEz2\"></block>\n                    </value>\n                    <value name=\"ADD2\">\n                      <block type=\"text\" id=\":NO!.*]]4msA1T34q;FB\">\n                        <field name=\"TEXT\"> USD</field>\n                      </block>\n                    </value>\n                  </block>\n                </value>\n              </block>\n            </statement>\n            <statement name=\"ELSE\">\n              <block type=\"controls_if\" id=\";E5?xIr$8!?F8Hs41kDm\">\n                <value name=\"IF0\">\n                  <block type=\"logic_compare\" id=\"D9bEjC8I~.vz_N9lH{T0\">\n                    <field name=\"OP\">LT</field>\n                    <value name=\"A\">\n                      <block type=\"total_profit\" id=\"=eQm2XSw.rYyExEUXjVr\"></block>\n                    </value>\n                    <value name=\"B\">\n                      <block type=\"variables_get\" id=\"ig@yG0`jyxWH6QP!$R|z\">\n                        <field name=\"VAR\" id=\"3C@HUF)?z(zn8g3GPaNd\" variabletype=\"\">TARGET PROFIT</field>\n                      </block>\n                    </value>\n                  </block>\n                </value>\n                <statement name=\"DO0\">\n                  <block type=\"trade_again\" id=\"4@JcI#uIDv~c(PPGio_`\"></block>\n                </statement>\n              </block>\n            </statement>\n          </block>\n        </next>\n      </block>\n    </statement>\n  </block>\n</xml>";
         const exampleBots = [
-          { id: "bot-example-digitdiff", name: "REPETEWIN-DIGITDIFF", strategy: "DIFFERS", contractType: "DIGITDIFF", stake: "10", martingale: 1, stopLoss: "50", takeProfit: "100", symbol: "1HZ100V", targetDigit: null, originalXml: REPETEWIN_XML, improvedXml: null, savedAt: "2025-01-01T00:00:00.000Z", isExample: true },
-          { id: "bot-example-differs2", name: "123DIFFER-DIFFERS", strategy: "DIFFERS", contractType: "DIGITDIFF", stake: "1", martingale: 1, stopLoss: null, takeProfit: null, symbol: "R_50", targetDigit: null, originalXml: DIFFER2_XML, improvedXml: null, savedAt: "2025-01-01T00:00:01.000Z", isExample: true },
-          { id: "bot-example-digitdiff-p", name: "DIGITDIFF-P-DIFFERS", strategy: "DIFFERS", contractType: "DIGITDIFF", stake: "2.5", martingale: 1, stopLoss: null, takeProfit: null, symbol: "R_100", targetDigit: null, originalXml: DIGITDIFF_P_XML, improvedXml: null, savedAt: "2025-01-01T00:00:02.000Z", isExample: true },
-          { id: "bot-example-overprofit", name: "OVER-PROFIT-R10", strategy: "OVER", contractType: "DIGITOVER", stake: "0.5", martingale: 1.5, stopLoss: "50", takeProfit: "5", symbol: "R_10", targetDigit: null, originalXml: OVER_XML, improvedXml: null, savedAt: "2025-01-01T00:00:03.000Z", isExample: true },
+          { id: "bot-example-digitdiff", name: "DIGITDIFF-DIFFERS-example", strategy: "DIFFERS", contractType: "DIGITDIFF", stake: "10", martingale: 1, stopLoss: "50", takeProfit: "100", symbol: "1HZ100V", targetDigit: null, originalXml: "<!-- REPETEWIN DIGITDIFF bot — uploaded by user, validated on Deriv -->", improvedXml: null, savedAt: "2025-01-01T00:00:00.000Z", isExample: true },
+          { id: "bot-example-differs2", name: "123DIFFER-DIFFERS-example", strategy: "DIFFERS", contractType: "DIGITDIFF", stake: "1", martingale: 1, stopLoss: "500", takeProfit: "500", symbol: "R_50", targetDigit: null, originalXml: "<!-- 123Differ_2 bot — uploaded by user, validated on Deriv -->", improvedXml: null, savedAt: "2025-01-01T00:00:01.000Z", isExample: true },
+          { id: "bot-example-digitdiff-p", name: "DIGITDIFF-P-DIFFERS-example", strategy: "DIFFERS", contractType: "DIGITDIFF", stake: "2.5", martingale: 1, stopLoss: null, takeProfit: null, symbol: "R_100", targetDigit: null, originalXml: "<!-- Bot_DIGITDIFF_P — uploaded by user, validated on Deriv -->", improvedXml: null, savedAt: "2025-01-01T00:00:02.000Z", isExample: true },
+          { id: "bot-example-overprofit", name: "DIGITOVER-OVER-example", strategy: "OVER", contractType: "DIGITOVER", stake: "0.5", martingale: 1.5, stopLoss: "50", takeProfit: "5", symbol: "R_10", targetDigit: null, originalXml: "<!-- BINARY_BOT_OVER_PROFIT — uploaded by user, validated on Deriv -->", improvedXml: null, savedAt: "2025-01-01T00:00:03.000Z", isExample: true },
         ];
         const index = [];
         for (const bot of exampleBots) {
@@ -1521,10 +1738,10 @@ export default function DerivOracle() {
         {/* HEADER */}
         <div className="header">
           <div className="logo">
-            <div className="logo-mark"><span>D</span></div>
+            <div className="logo-mark"><span>R</span></div>
             <div>
-              <div className="logo-text">DERIV·ORACLE</div>
-              <div className="logo-sub">Synthetic Indices Analysis Terminal v2.0</div>
+              <div className="logo-text">ROMANS 8:28 ORACLE</div>
+              <div className="logo-sub">And we know that in all things God works for the good · v3.0</div>
             </div>
           </div>
           <div className="header-right">
@@ -1646,7 +1863,7 @@ export default function DerivOracle() {
           {/* TABS */}
           {ticks.length > 0 && (
             <div className="tabs">
-              {[["overview","Overview"],["evenodd","Even/Odd"],["risefall","Rise/Fall"],["matchdiffer","Matches/Differs"],["overunder","Over/Under"],["signals","⚡ Signals"],["predict","🎯 Predict"],["papertrade","📋 Paper Trade"],["bots","🤖 Bots"]].map(([id, label]) => (
+              {[["overview","Overview"],["evenodd","Even/Odd"],["risefall","Rise/Fall"],["matchdiffer","Matches/Differs"],["overunder","Over/Under"],["signals","⚡ Signals"],["predict","🎯 Predict"],["papertrade","📋 Paper Trade"],["bots","🤖 Bots"],["execute","⚡ Execute"]].map(([id, label]) => (
                 <button key={id} className={`tab ${activeTab === id ? "active" : ""}`} onClick={() => setActiveTab(id)}>{label}</button>
               ))}
             </div>
@@ -2649,14 +2866,217 @@ export default function DerivOracle() {
             </div>
           )}
 
+
+          {/* ── ⚡ EXECUTE TAB — PHASE 4 ── */}
+          {activeTab === "execute" && (() => {
+            const coldDigit = hotCold.cold.length > 0 ? hotCold.cold[0] : null;
+            const hotDigit  = hotCold.hot.length  > 0 ? hotCold.hot[0]  : null;
+            const wins  = execTradesRef.current.filter(t => t.status === "WIN").length;
+            const losses = execTradesRef.current.filter(t => t.status === "LOSS").length;
+            const total  = wins + losses;
+            const wr     = total > 0 ? ((wins / total) * 100).toFixed(1) : "—";
+            const latClass = latencyMs === null ? "latency-ok" : latencyMs < 80 ? "latency-good" : latencyMs < 200 ? "latency-ok" : "latency-bad";
+            return (
+              <div>
+                {/* ── WARNING BANNER ── */}
+                <div style={{ background:"rgba(255,165,0,0.08)", border:"1px solid var(--orange)", borderRadius:4, padding:"10px 14px", marginBottom:10, fontSize:10, color:"var(--orange)", letterSpacing:1, lineHeight:1.6 }}>
+                  ⚠ PHASE 4 — LIVE TRADE EXECUTION · Trades use real account balance ·
+                  Ensure you are connected and authorized · Start with minimum stake ·
+                  DIFFERS on {symbol} · Prediction auto-updates every tick from live heatmap
+                </div>
+
+                {/* ── LIVE SIGNAL DISPLAY ── */}
+                <div className="execute-grid" style={{ marginBottom:10 }}>
+                  <div className={"signal-live" + (coldDigit !== null ? " hot" : "")}>
+                    <div className="signal-live-label">⚡ DIFFERS TARGET · COLDEST DIGIT</div>
+                    <div className="signal-live-val" style={{ color:"var(--green)" }}>
+                      {coldDigit !== null ? coldDigit : "—"}
+                    </div>
+                    <div style={{ fontSize:9, color:"var(--text-dim)" }}>
+                      {coldDigit !== null ? "Least frequent — best DIFFERS prediction" : "Need 20+ ticks"}
+                    </div>
+                  </div>
+                  <div className="signal-live">
+                    <div className="signal-live-label">🔥 HOT DIGIT · MOST FREQUENT</div>
+                    <div className="signal-live-val" style={{ color:"var(--orange)" }}>
+                      {hotDigit !== null ? hotDigit : "—"}
+                    </div>
+                    <div style={{ fontSize:9, color:"var(--text-dim)" }}>Appearing most — avoid as DIFFERS target</div>
+                  </div>
+                </div>
+
+                {/* ── SESSION STATS ── */}
+                <div className="exec-stat-row">
+                  {[
+                    [total || "0", "TRADES", "var(--cyan)"],
+                    [wins, "WINS", "var(--green)"],
+                    [losses, "LOSSES", "var(--red)"],
+                    [wr === "—" ? "—" : wr + "%", "WIN RATE", wr !== "—" && parseFloat(wr) >= 47.4 ? "var(--green)" : "var(--yellow)"],
+                  ].map(([val,label,color]) => (
+                    <div key={label} className="exec-stat">
+                      <div className="exec-stat-val" style={{ color }}>{val}</div>
+                      <div className="exec-stat-label">{label}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="exec-stat-row">
+                  {[
+                    [(execSessionPnl >= 0 ? "+" : "") + execSessionPnl.toFixed(2), "SESSION P&L USD", execSessionPnl >= 0 ? "var(--green)" : "var(--red)"],
+                    [balance ? "$" + balance : "—", "ACCOUNT BALANCE", "var(--cyan)"],
+                    [latencyMs !== null ? latencyMs + "ms" : "—", "LAST RTT", latencyMs !== null && latencyMs < 80 ? "var(--green)" : "var(--yellow)"],
+                    [symbol, "INDEX", "var(--text)"],
+                  ].map(([val,label,color]) => (
+                    <div key={label} className="exec-stat">
+                      <div className="exec-stat-val" style={{ color, fontSize:14 }}>{val}</div>
+                      <div className="exec-stat-label">{label}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* ── CONTROLS ── */}
+                <div className="panel" style={{ marginBottom:10 }}>
+                  <div className="panel-title"><span className="dot dot-orange"/>Trade Controls</div>
+
+                  {/* Stake + WS Connect row */}
+                  <div style={{ display:"flex", gap:8, marginBottom:10, flexWrap:"wrap" }}>
+                    <div style={{ flex:1, minWidth:120 }}>
+                      <div style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:2, marginBottom:4 }}>STAKE (USD)</div>
+                      <input
+                        className="stake-input"
+                        type="number" min="0.35" step="0.5"
+                        value={execStake}
+                        onChange={e => setExecStake(e.target.value)}
+                        disabled={execArmed}
+                      />
+                    </div>
+                    <div style={{ display:"flex", flexDirection:"column", gap:4, justifyContent:"flex-end" }}>
+                      <button className="btn btn-green" style={{ fontSize:10, padding:"7px 14px", whiteSpace:"nowrap" }}
+                        onClick={connectTradeWS}>
+                        ⚡ Connect Trade WS
+                      </button>
+                      <div className="latency-bar">
+                        <div className={"latency-dot " + latClass}/>
+                        <span style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:1 }}>
+                          {latencyMs !== null ? "RTT " + latencyMs + "ms" : "not measured"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Log line */}
+                  {execLog && (
+                    <div style={{ fontFamily:"var(--mono)", fontSize:10, color: execLog.startsWith("✓") ? "var(--green)" : execLog.startsWith("✗") ? "var(--red)" : execLog.startsWith("⚠") ? "var(--yellow)" : "var(--text-dim)", padding:"6px 8px", background:"rgba(0,0,0,0.3)", borderRadius:3, marginBottom:10, whiteSpace:"pre-wrap" }}>
+                      {execLog}
+                    </div>
+                  )}
+
+                  {/* ARM / DISARM button */}
+                  <button
+                    className={"arm-btn" + (execArmed ? (execFiring ? " firing" : " armed") : "")}
+                    onClick={() => {
+                      if (!execArmed) {
+                        if (digits.length < 20) { setExecLog("⚠ Need 20+ live ticks before arming."); return; }
+                        if (!tradeWsRef.current || tradeWsRef.current.readyState !== WebSocket.OPEN) {
+                          setExecLog("⚠ Connect Trade WS first."); return;
+                        }
+                        setShowConfirm(true);
+                      } else {
+                        setExecArmed(false);
+                        setExecFiring(false);
+                        setExecLog("⬛ Disarmed — no more trades will fire.");
+                      }
+                    }}
+                  >
+                    {execArmed ? (execFiring ? "⟳ FIRING TRADE..." : "🟢 ARMED · CLICK TO DISARM") : "▶ ARM — START TRADING"}
+                  </button>
+
+                  {execArmed && (
+                    <div style={{ fontSize:9, color:"var(--green)", textAlign:"center", marginTop:6, letterSpacing:1 }}>
+                      Trading DIGITDIFF DIFFERS · digit updates live · ${ execStake} per tick · {symbol}
+                    </div>
+                  )}
+                </div>
+
+                {/* ── TRADE LOG ── */}
+                <div className="panel">
+                  <div className="panel-title" style={{ justifyContent:"space-between" }}>
+                    <span><span className="dot dot-green"/>Live Trade Log ({execTradesRef.current.length})</span>
+                    <button className="btn" style={{ fontSize:9, padding:"3px 8px" }}
+                      onClick={() => { execTradesRef.current = []; setExecTrades([]); setExecSessionPnl(0); }}>
+                      Clear
+                    </button>
+                  </div>
+                  {execTradesRef.current.length === 0 ? (
+                    <div style={{ color:"var(--text-dim)", fontSize:11, textAlign:"center", padding:"20px 0" }}>
+                      No trades yet. Connect Trade WS → Arm → trades appear here.
+                    </div>
+                  ) : (
+                    <div className="execute-log">
+                      <div className="execute-log-row" style={{ color:"var(--text-dim)", fontSize:8, letterSpacing:1, borderBottom:"1px solid var(--border2)" }}>
+                        <span>TIME</span><span>DIGIT</span><span>STAKE</span><span>STATUS</span><span>P&amp;L</span><span>EXIT</span>
+                      </div>
+                      {execTrades.map((t, i) => (
+                        <div key={t.id || i} className={"execute-log-row " + (t.status === "WIN" ? "win" : t.status === "LOSS" ? "loss" : "pending")}>
+                          <span style={{ color:"var(--text-dim)" }}>{t.time}</span>
+                          <span style={{ color:"var(--cyan)" }}>≠{t.digit}</span>
+                          <span>${t.stake}</span>
+                          <span style={{ color: t.status === "WIN" ? "var(--green)" : t.status === "LOSS" ? "var(--red)" : "var(--yellow)" }}>
+                            {t.status}
+                          </span>
+                          <span className={t.pnl === null ? "" : t.pnl >= 0 ? "exec-pnl-pos" : "exec-pnl-neg"}>
+                            {t.pnl === null ? "..." : (t.pnl >= 0 ? "+" : "") + t.pnl.toFixed(2)}
+                          </span>
+                          <span style={{ color:"var(--text-dim)", fontSize:9 }}>{t.exitSpot || "—"}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* PHASE 2 TEASER */}
           <div className="phase2-banner">
-            <div className="phase2-title">⚙ PHASE 3 ✅ — XML BOT ANALYZER + AI BOT GENERATOR ACTIVE · PHASE 4 — ONE-CLICK TRADE EXECUTION [COMING SOON]</div>
+            <div className="phase2-title">⚙ PHASE 3 ✅ · PHASE 4 ✅ — LIVE TRADE EXECUTION ACTIVE · PHASE 5 — AUTO STAKE MANAGER [COMING SOON]</div>
             <div className="phase2-sub">Upload Deriv bot XML files · Auto-detect strategy · Bot health check · Buy contracts directly from dashboard</div>
           </div>
 
         </div>
       </div>
+
+      {/* ── CONFIRM ARM OVERLAY ── */}
+      {showConfirm && (
+        <div className="confirm-overlay" onClick={() => setShowConfirm(false)}>
+          <div className="confirm-box" onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize:28, marginBottom:12 }}>⚡</div>
+            <div style={{ fontFamily:"var(--head)", fontSize:14, letterSpacing:3, color:"var(--orange)", marginBottom:8 }}>
+              ARM LIVE TRADING?
+            </div>
+            <div style={{ fontSize:11, color:"var(--text-dim)", lineHeight:1.7, marginBottom:20 }}>
+              This will execute <strong style={{ color:"var(--text)" }}>real trades</strong> on your Deriv account.
+              Each tick will place a DIGITDIFF DIFFERS contract on <strong style={{ color:"var(--cyan)" }}>{symbol}</strong> at
+              <strong style={{ color:"var(--green)" }}> ${execStake}</strong> stake using the live coldest digit.
+              <br/><br/>
+              <span style={{ color:"var(--orange)" }}>Romans 8:28 — all things work together for good.</span>
+            </div>
+            <div style={{ display:"flex", gap:10 }}>
+              <button className="btn" style={{ flex:1, padding:"10px", fontSize:11 }}
+                onClick={() => setShowConfirm(false)}>
+                Cancel
+              </button>
+              <button className="btn btn-green" style={{ flex:1, padding:"10px", fontSize:11, letterSpacing:2 }}
+                onClick={() => {
+                  setShowConfirm(false);
+                  setExecArmed(true);
+                  setExecLog("🟢 ARMED — trading DIGITDIFF DIFFERS on " + symbol + " at $" + execStake + " per tick.");
+                }}>
+                ARM &amp; TRADE
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
