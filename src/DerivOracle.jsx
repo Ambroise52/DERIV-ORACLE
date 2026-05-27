@@ -15,7 +15,8 @@ const OR_MODEL = "deepseek/deepseek-r1:free";
 
 // ── DERIV CONFIG ──────────────────────────────────────────────────────────────
 const DERIV_APP_ID = process.env.REACT_APP_DERIV_APP_ID || "1089";
-const DERIV_TOKEN = process.env.REACT_APP_DERIV_TOKEN || "pat_d543aaa32d719ba935cf22a3e338be020f50c2fa901e1751c27497b247752189";
+// Token loaded from env — never hardcode a live PAT here
+const DERIV_TOKEN_DEFAULT = process.env.REACT_APP_DERIV_TOKEN || "";
 const DERIV_WS_URL = `wss://ws.derivws.com/websockets/v3?app_id=${DERIV_APP_ID}`;
 
 const SYMBOLS = [
@@ -1064,6 +1065,13 @@ export default function DerivOracle() {
 
 
 
+  // ── AUTH + ACCOUNT STATE ──────────────────────────────────────────────────
+  const [derivToken, setDerivToken] = useState(DERIV_TOKEN_DEFAULT);
+  const [tokenInput, setTokenInput] = useState("");
+  const [accountList, setAccountList] = useState([]);   // [{loginid, is_virtual, currency, token}]
+  const [activeAccount, setActiveAccount] = useState(null); // selected account object
+  const [showTokenSetup, setShowTokenSetup] = useState(!DERIV_TOKEN_DEFAULT);
+
   // ── PHASE 4: EXECUTE STATE ───────────────────────────────────────────────
   const tradeWsRef = useRef(null);          // dedicated trade WebSocket
   const tradeReqIdRef = useRef(1);          // incrementing request IDs
@@ -1160,7 +1168,9 @@ export default function DerivOracle() {
 
     ws.onopen = () => {
       setExecLog("Trade WS open — authorizing...");
-      ws.send(JSON.stringify({ authorize: DERIV_TOKEN, req_id: 1 }));
+      const authToken = activeAccount?.token || derivToken || DERIV_TOKEN_DEFAULT;
+      if (!authToken) { setExecLog("⚠ No token set. Enter your Deriv API token below."); ws.close(); return; }
+      ws.send(JSON.stringify({ authorize: authToken, req_id: 1 }));
     };
 
     ws.onmessage = (e) => {
@@ -1308,6 +1318,31 @@ export default function DerivOracle() {
   // Cleanup trade WS on unmount
   useEffect(() => { return () => disconnectTradeWS(); }, [disconnectTradeWS]);
 
+
+  // ── SWITCH ACCOUNT (demo ↔ real) ─────────────────────────────────────────
+  const switchAccount = useCallback((account) => {
+    if (!account) return;
+    setActiveAccount(account);
+    setDerivToken(account.token);
+    setExecArmed(false);
+    setExecFiring(false);
+    setExecLog("Switching to " + account.label + " — reconnecting trade WS...");
+    // Re-authorize trade WS with new account token
+    if (tradeWsRef.current && tradeWsRef.current.readyState === WebSocket.OPEN) {
+      tradeWsRef.current.send(JSON.stringify({
+        authorize: account.token,
+        req_id: ++tradeReqIdRef.current,
+      }));
+    } else {
+      connectTradeWS();
+    }
+    // Re-authorize data WS for correct balance
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ authorize: account.token }));
+    }
+    setConnLog("Switched to " + account.label);
+  }, [connectTradeWS]);
+
   const connectWS = useCallback((sym) => {
     // Close existing connection cleanly
     if (wsRef.current) {
@@ -1329,7 +1364,7 @@ export default function DerivOracle() {
 
     ws.onopen = () => {
       setConnLog("WebSocket open — authorizing...");
-      ws.send(JSON.stringify({ authorize: DERIV_TOKEN }));
+      ws.send(JSON.stringify({ authorize: derivToken || DERIV_TOKEN_DEFAULT }));
     };
 
     ws.onmessage = (e) => {
@@ -1350,10 +1385,12 @@ export default function DerivOracle() {
           setBalance(parseFloat(acc.balance).toFixed(2));
           setCurrency(acc.currency || "USD");
         }
-        setConnLog(`Authorized ✓ ${acc?.loginid || ""} — subscribing to ${sym}...`);
+        setConnLog(`Authorized ✓ ${acc?.loginid || ""} — loading accounts...`);
         ws.send(JSON.stringify({ ticks: sym, subscribe: 1 }));
         ws.send(JSON.stringify({ ticks_history: sym, adjust_start_time: 1, count: 100, end: "latest", style: "ticks" }));
         ws.send(JSON.stringify({ balance: 1, subscribe: 1 }));
+        // Request account list so user can switch between demo/real
+        ws.send(JSON.stringify({ account_list: 1 }));
       }
 
       // Historical ticks pre-fill
@@ -1438,6 +1475,24 @@ export default function DerivOracle() {
         aiCounterRef.current += 1;
         if (autoAIRef.current && aiCounterRef.current % 25 === 0) {
           triggerAIRef.current && triggerAIRef.current(updated);
+        }
+      }
+
+      // Account list — populate demo/real switcher
+      if (msg.msg_type === "account_list" && msg.account_list) {
+        const accounts = msg.account_list.map(a => ({
+          loginid: a.loginid,
+          is_virtual: a.is_virtual,
+          currency: a.currency || "USD",
+          token: a.token,
+          label: (a.is_virtual ? "🎮 DEMO" : "💰 REAL") + " · " + a.loginid + " · " + (a.currency || "USD"),
+        }));
+        setAccountList(accounts);
+        // Auto-select virtual (demo) account if none selected yet
+        const demo = accounts.find(a => a.is_virtual);
+        if (!activeAccount && demo) {
+          setActiveAccount(demo);
+          setConnLog("✓ Accounts loaded — demo account selected by default. Switch in Execute tab.");
         }
       }
 
@@ -2878,11 +2933,61 @@ export default function DerivOracle() {
             const latClass = latencyMs === null ? "latency-ok" : latencyMs < 80 ? "latency-good" : latencyMs < 200 ? "latency-ok" : "latency-bad";
             return (
               <div>
+                {/* ── TOKEN SETUP ── */}
+                {(!derivToken && !activeAccount) && (
+                  <div style={{ background:"rgba(255,165,0,0.08)", border:"1px solid var(--orange)", borderRadius:4, padding:14, marginBottom:10 }}>
+                    <div style={{ fontSize:11, color:"var(--orange)", letterSpacing:2, marginBottom:8 }}>⚠ API TOKEN REQUIRED</div>
+                    <div style={{ fontSize:10, color:"var(--text-dim)", marginBottom:10, lineHeight:1.7 }}>
+                      Go to <strong style={{color:"var(--cyan)"}}>app.deriv.com → Account Settings → API Token</strong><br/>
+                      Create a token with <strong style={{color:"var(--text)"}}>Read + Trade</strong> scope. Paste it below.
+                    </div>
+                    <div style={{ display:"flex", gap:8 }}>
+                      <input className="stake-input" placeholder="paste your Deriv API token here..."
+                        value={tokenInput} onChange={e => setTokenInput(e.target.value)}
+                        style={{ flex:1, fontSize:11 }}/>
+                      <button className="btn btn-green" style={{ fontSize:10, padding:"8px 14px", whiteSpace:"nowrap" }}
+                        onClick={() => { if(tokenInput.trim()) { setDerivToken(tokenInput.trim()); setTokenInput(""); setShowTokenSetup(false); }}}>
+                        Save Token
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── ACCOUNT SWITCHER ── */}
+                {accountList.length > 0 && (
+                  <div style={{ marginBottom:10 }}>
+                    <div style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:2, marginBottom:6 }}>SELECT ACCOUNT</div>
+                    <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                      {accountList.map(acc => (
+                        <button key={acc.loginid}
+                          className={"btn" + (activeAccount?.loginid === acc.loginid ? (acc.is_virtual ? " btn-green" : " btn-orange") : "")}
+                          style={{ fontSize:10, padding:"6px 14px", borderColor: acc.is_virtual ? "var(--green)" : "var(--orange)" }}
+                          onClick={() => switchAccount(acc)}>
+                          {acc.label}
+                        </button>
+                      ))}
+                    </div>
+                    {activeAccount && (
+                      <div style={{ fontSize:9, marginTop:6, padding:"4px 10px", borderRadius:3,
+                        background: activeAccount.is_virtual ? "rgba(0,255,136,0.06)" : "rgba(255,165,0,0.08)",
+                        border: "1px solid " + (activeAccount.is_virtual ? "var(--green)" : "var(--orange)"),
+                        color: activeAccount.is_virtual ? "var(--green)" : "var(--orange)" }}>
+                        {activeAccount.is_virtual
+                          ? "🎮 DEMO MODE — virtual funds only · safe to test"
+                          : "⚠ REAL ACCOUNT — trades use real money · proceed carefully"}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* ── WARNING BANNER ── */}
-                <div style={{ background:"rgba(255,165,0,0.08)", border:"1px solid var(--orange)", borderRadius:4, padding:"10px 14px", marginBottom:10, fontSize:10, color:"var(--orange)", letterSpacing:1, lineHeight:1.6 }}>
-                  ⚠ PHASE 4 — LIVE TRADE EXECUTION · Trades use real account balance ·
-                  Ensure you are connected and authorized · Start with minimum stake ·
-                  DIFFERS on {symbol} · Prediction auto-updates every tick from live heatmap
+                <div style={{ background: activeAccount?.is_virtual ? "rgba(0,255,136,0.04)" : "rgba(255,165,0,0.08)",
+                  border:"1px solid " + (activeAccount?.is_virtual ? "var(--green)" : "var(--orange)"),
+                  borderRadius:4, padding:"8px 14px", marginBottom:10, fontSize:10,
+                  color: activeAccount?.is_virtual ? "var(--green)" : "var(--orange)", letterSpacing:1, lineHeight:1.6 }}>
+                  {activeAccount?.is_virtual
+                    ? "🎮 DEMO — virtual funds · DIFFERS on " + symbol + " · prediction updates every tick"
+                    : "⚠ REAL ACCOUNT — DIFFERS on " + symbol + " · Start with $0.35 minimum stake · " + (activeAccount?.loginid || "")}
                 </div>
 
                 {/* ── LIVE SIGNAL DISPLAY ── */}
@@ -2954,6 +3059,11 @@ export default function DerivOracle() {
                         onClick={connectTradeWS}>
                         ⚡ Connect Trade WS
                       </button>
+                      <a href="https://app.deriv.com/account/api-token" target="_blank" rel="noreferrer"
+                        style={{ fontSize:9, color:"var(--cyan)", textDecoration:"none", letterSpacing:1,
+                          padding:"4px 8px", border:"1px solid var(--border)", borderRadius:3, whiteSpace:"nowrap" }}>
+                        🔑 Get API Token ↗
+                      </a>
                       <div className="latency-bar">
                         <div className={"latency-dot " + latClass}/>
                         <span style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:1 }}>
@@ -2991,8 +3101,11 @@ export default function DerivOracle() {
                   </button>
 
                   {execArmed && (
-                    <div style={{ fontSize:9, color:"var(--green)", textAlign:"center", marginTop:6, letterSpacing:1 }}>
-                      Trading DIGITDIFF DIFFERS · digit updates live · ${ execStake} per tick · {symbol}
+                    <div style={{ fontSize:9, color: activeAccount?.is_virtual ? "var(--green)" : "var(--orange)",
+                      textAlign:"center", marginTop:6, letterSpacing:1,
+                      padding:"5px 10px", borderRadius:3,
+                      background: activeAccount?.is_virtual ? "rgba(0,255,136,0.06)" : "rgba(255,165,0,0.08)" }}>
+                      {activeAccount?.is_virtual ? "🎮 DEMO" : "⚠ REAL"} · DIGITDIFF DIFFERS · digit updates live · ${execStake} stake · {symbol}
                     </div>
                   )}
                 </div>
@@ -3054,7 +3167,10 @@ export default function DerivOracle() {
               ARM LIVE TRADING?
             </div>
             <div style={{ fontSize:11, color:"var(--text-dim)", lineHeight:1.7, marginBottom:20 }}>
-              This will execute <strong style={{ color:"var(--text)" }}>real trades</strong> on your Deriv account.
+              This will execute trades on your
+              <strong style={{ color: activeAccount?.is_virtual ? "var(--green)" : "var(--orange)" }}>
+                {activeAccount?.is_virtual ? " DEMO (virtual funds)" : " REAL account"}
+              </strong>.
               Each tick will place a DIGITDIFF DIFFERS contract on <strong style={{ color:"var(--cyan)" }}>{symbol}</strong> at
               <strong style={{ color:"var(--green)" }}> ${execStake}</strong> stake using the live coldest digit.
               <br/><br/>
