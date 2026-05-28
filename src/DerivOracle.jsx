@@ -2596,7 +2596,7 @@ export default function DerivOracle() {
                       <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
                         <span style={{ fontSize: 11, color: "var(--text-dim)" }}>Balance $</span>
                         <input className="kelly-input" type="number" value={paperBalance} readOnly />
-                        <span style={{ fontSize: 13, color: "var(--green)" }>{"→ $"}{(paperBalance * (predictTopPick?.halfKelly || 0) / 100).toFixed(2)}</span>
+                        <span style={{ fontSize: 13, color: "var(--green)" }}>{"→ $"}{(paperBalance * (predictTopPick?.halfKelly || 0) / 100).toFixed(2)}</span>
                       </div>
                       <button className="btn btn-green" style={{ marginTop: 8 }}
                         onClick={() => { setActiveTab("papertrade"); logPaperTrade(predictTopPick.digit, predictTopPick.confidence, predictTopPick.winProb, predictTopPick.halfKelly, predictTopPick.betType); }}>
