@@ -1067,12 +1067,14 @@ export default function DerivOracle() {
 
   // ── AUTH + ACCOUNT STATE ──────────────────────────────────────────────────
   const [derivToken, setDerivToken] = useState(DERIV_TOKEN_DEFAULT);
+  const tokenRef = useRef(DERIV_TOKEN_DEFAULT);  // always-current ref, safe in closures
   const [tokenInput, setTokenInput] = useState("");
-  const [tokenValid, setTokenValid] = useState(false);  // true only after successful auth
+  const [tokenValid, setTokenValid] = useState(false);
   const [tokenError, setTokenError] = useState("");
   const [accountList, setAccountList] = useState([]);
   const [activeAccount, setActiveAccount] = useState(null);
-  const [showTokenSetup, setShowTokenSetup] = useState(true); // always show token panel
+  const activeAccountRef = useRef(null);         // always-current ref for closures
+  const [showTokenSetup, setShowTokenSetup] = useState(true);
 
   // ── PHASE 4: EXECUTE STATE ───────────────────────────────────────────────
   const tradeWsRef = useRef(null);          // dedicated trade WebSocket
@@ -1090,6 +1092,7 @@ export default function DerivOracle() {
   const [execSessionPnl, setExecSessionPnl] = useState(0);
   const execTradesRef = useRef([]);
   const lastExecTickRef = useRef(0);        // prevent double-firing on same tick
+  const [tradeWsStatus, setTradeWsStatus] = useState("disconnected"); // disconnected|connecting|open|error
 
   // ── BOT ANALYZER STATE (Phase 3) ─────────────────────────────────────────
   const [botSubTab, setBotSubTab] = useState("upload");
@@ -1163,16 +1166,34 @@ export default function DerivOracle() {
   // ══════════════════════════════════════════════════════════════════════════
 
   const connectTradeWS = useCallback(() => {
-    if (tradeWsRef.current && tradeWsRef.current.readyState <= 1) return;
+    // Force close any existing connection first
+    if (tradeWsRef.current) {
+      tradeWsRef.current.onclose = null;
+      tradeWsRef.current.onerror = null;
+      tradeWsRef.current.onmessage = null;
+      if (tradeWsRef.current.readyState <= 1) tradeWsRef.current.close();
+      tradeWsRef.current = null;
+    }
+    // Read token from ref — always current, never stale closure value
+    const authToken = activeAccountRef.current?.token || tokenRef.current || "";
+    if (!authToken || authToken.length < 10) {
+      setExecLog("⚠ No token found. Paste your Deriv API token above and click Save & Use first.");
+      return;
+    }
+    setExecLog("⟳ Opening trade WebSocket...");
+    setTradeWsStatus("connecting");
+    setTokenValid(false);
+    setTokenError("");
     const ws = new WebSocket(DERIV_WS_URL);
-    ws.binaryType = "arraybuffer"; // fastest parse mode
+    ws.binaryType = "arraybuffer";
     tradeWsRef.current = ws;
 
     ws.onopen = () => {
-      setExecLog("Trade WS open — authorizing...");
-      const authToken = activeAccount?.token || derivToken || DERIV_TOKEN_DEFAULT;
-      if (!authToken) { setExecLog("⚠ No token set. Enter your Deriv API token below."); ws.close(); return; }
-      ws.send(JSON.stringify({ authorize: authToken, req_id: 1 }));
+      setTradeWsStatus("connecting");
+      setExecLog("⟳ Trade WS open — authorizing with token...");
+      // Read from ref again at open time — always latest value
+      const tok = activeAccountRef.current?.token || tokenRef.current || "";
+      ws.send(JSON.stringify({ authorize: tok, req_id: ++tradeReqIdRef.current }));
     };
 
     ws.onmessage = (e) => {
@@ -1188,6 +1209,7 @@ export default function DerivOracle() {
           return;
         }
         setTokenValid(true);
+        setTradeWsStatus("open");
         setTokenError("");
         setExecLog("✓ Authorized — " + (msg.authorize?.loginid || "") + " · " + (msg.authorize?.is_virtual ? "DEMO" : "REAL") + " — ready to trade.");
         // Request account list for switcher
@@ -1210,9 +1232,11 @@ export default function DerivOracle() {
           // Default to demo regardless of execMode — safety first
           const pick = demo || accounts[0];
           if (pick) {
+            activeAccountRef.current = pick;
+            tokenRef.current = pick.token;
             setActiveAccount(pick);
             setDerivToken(pick.token);
-            setExecLog("✓ Accounts loaded · " + accounts.length + " account(s) · " + pick.label + " selected — switch anytime above.");
+            setExecLog("✓ " + accounts.length + " account(s) loaded · " + pick.label + " auto-selected · Switch above anytime.");
           }
         }
       }
@@ -1224,14 +1248,17 @@ export default function DerivOracle() {
           pendingProposalRef.current = null;
           return;
         }
-        // Immediately buy — this is the hot path, minimize object creation
+        // Immediately buy — hot path, minimal latency
         const proposalId = msg.proposal.id;
         const price = msg.proposal.ask_price;
-        const payout = msg.proposal.payout;
         const t1 = Date.now();
-        pendingProposalRef.current = { proposalId, price, payout, t1 };
+        // Preserve digit/stake from fireTrade, add proposal timing
+        pendingProposalRef.current = {
+          ...(pendingProposalRef.current || {}),
+          proposalId, price, t1,
+        };
         ws.send(JSON.stringify({ buy: proposalId, price, req_id: ++tradeReqIdRef.current }));
-        setExecLog("⚡ Proposal $" + price + " → Buying instantly...");
+        setExecLog("⚡ Proposal received $" + price + " → buying...");
       }
 
       if (msg.msg_type === "buy") {
@@ -1294,8 +1321,8 @@ export default function DerivOracle() {
       }
     };
 
-    ws.onerror = () => setExecLog("⚠ Trade WS error — reconnecting...");
-    ws.onclose = () => setExecLog("Trade WS closed.");
+    ws.onerror = () => { setTradeWsStatus("error"); setExecLog("⚠ Trade WS error."); };
+    ws.onclose = () => { setTradeWsStatus("disconnected"); setExecLog("Trade WS closed."); };
   }, [execStake]);
 
   const disconnectTradeWS = useCallback(() => {
@@ -1360,6 +1387,9 @@ export default function DerivOracle() {
     setExecArmed(false);
     setExecFiring(false);
     setTokenValid(false);
+    // Update refs immediately so reconnect uses latest values
+    activeAccountRef.current = account;
+    tokenRef.current = account.token;
     setActiveAccount(account);
     setDerivToken(account.token);
     setExecLog("Switching to " + account.label + " — re-authorizing...");
@@ -3056,8 +3086,12 @@ export default function DerivOracle() {
                       value={tokenInput}
                       onChange={e => setTokenInput(e.target.value)}
                       onKeyDown={e => { if(e.key === "Enter" && tokenInput.trim()) {
-                        setDerivToken(tokenInput.trim()); setTokenValid(false); setTokenError("");
+                        const t = tokenInput.trim();
+                        tokenRef.current = t;
+                        activeAccountRef.current = null;
+                        setDerivToken(t); setTokenValid(false); setTokenError("");
                         setTokenInput(""); setAccountList([]); setActiveAccount(null);
+                        setExecLog("✓ Token saved — click ⚡ Connect Trade WS to verify.");
                       }}}
                       style={{ flex:1, fontSize:11 }}
                       type="password"
@@ -3067,13 +3101,16 @@ export default function DerivOracle() {
                       style={{ fontSize:10, padding:"8px 14px", whiteSpace:"nowrap" }}
                       onClick={() => {
                         if(tokenInput.trim()) {
-                          setDerivToken(tokenInput.trim());
+                          const t = tokenInput.trim();
+                          tokenRef.current = t;
+                          activeAccountRef.current = null;
+                          setDerivToken(t);
                           setTokenValid(false);
                           setTokenError("");
                           setTokenInput("");
                           setAccountList([]);
                           setActiveAccount(null);
-                          setExecLog("Token saved — click Connect Trade WS to verify.");
+                          setExecLog("✓ Token saved — click ⚡ Connect Trade WS to verify.");
                         }
                       }}>
                       Save &amp; Use
@@ -3084,7 +3121,7 @@ export default function DerivOracle() {
                     <div style={{ fontSize:9, color:"var(--text-dim)", marginTop:6 }}>
                       Token set {tokenValid ? "and verified ✓" : "— connect to verify"}
                       {" · "}<span style={{ cursor:"pointer", color:"var(--red)", textDecoration:"underline" }}
-                        onClick={() => { setDerivToken(""); setTokenValid(false); setTokenError(""); setAccountList([]); setActiveAccount(null); }}>
+                        onClick={() => { tokenRef.current = ""; activeAccountRef.current = null; setDerivToken(""); setTokenValid(false); setTokenError(""); setAccountList([]); setActiveAccount(null); }}>
                         clear
                       </span>
                     </div>
@@ -3234,22 +3271,38 @@ export default function DerivOracle() {
                         disabled={execArmed}
                       />
                     </div>
-                    <div style={{ display:"flex", flexDirection:"column", gap:4, justifyContent:"flex-end" }}>
-                      <button className="btn btn-green" style={{ fontSize:10, padding:"7px 14px", whiteSpace:"nowrap" }}
-                        onClick={connectTradeWS}>
-                        ⚡ Connect Trade WS
+                    <div style={{ display:"flex", flexDirection:"column", gap:6, justifyContent:"flex-end" }}>
+                      <button
+                        style={{ fontSize:10, padding:"9px 16px", whiteSpace:"nowrap", letterSpacing:1,
+                          fontFamily:"var(--head)", cursor:"pointer", borderRadius:3,
+                          border:"2px solid " + (tradeWsStatus === "open" ? "var(--green)" : tradeWsStatus === "connecting" ? "var(--yellow)" : tradeWsStatus === "error" ? "var(--red)" : "var(--cyan)"),
+                          background: tradeWsStatus === "open" ? "rgba(0,255,136,0.08)" : tradeWsStatus === "error" ? "rgba(255,50,50,0.08)" : "rgba(0,191,255,0.06)",
+                          color: tradeWsStatus === "open" ? "var(--green)" : tradeWsStatus === "connecting" ? "var(--yellow)" : tradeWsStatus === "error" ? "var(--red)" : "var(--cyan)" }}
+                        onClick={() => {
+                          const t = tokenRef.current || derivToken;
+                          if (!t || t.length < 10) { setExecLog("⚠ Save a token first — paste it above and click Save & Use."); return; }
+                          tokenRef.current = t;
+                          connectTradeWS();
+                        }}>
+                        {tradeWsStatus === "open" ? "✓ CONNECTED — CLICK TO RECONNECT" :
+                         tradeWsStatus === "connecting" ? "⟳ CONNECTING..." :
+                         tradeWsStatus === "error" ? "✗ ERROR — RETRY" :
+                         "⚡ CONNECT TRADE WS"}
                       </button>
-                      <a href="https://app.deriv.com/account/api-token" target="_blank" rel="noreferrer"
-                        style={{ fontSize:9, color:"var(--cyan)", textDecoration:"none", letterSpacing:1,
-                          padding:"4px 8px", border:"1px solid var(--border)", borderRadius:3, whiteSpace:"nowrap" }}>
-                        🔑 Get API Token ↗
-                      </a>
                       <div className="latency-bar">
-                        <div className={"latency-dot " + latClass}/>
+                        <div className={"latency-dot " + (tradeWsStatus === "open" ? (latencyMs !== null && latencyMs < 80 ? "latency-good" : "latency-ok") : tradeWsStatus === "connecting" ? "latency-ok" : "latency-bad")}/>
                         <span style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:1 }}>
-                          {latencyMs !== null ? "RTT " + latencyMs + "ms" : "not measured"}
+                          {tradeWsStatus === "open" && tokenValid ? "✓ AUTH OK" + (latencyMs ? " · " + latencyMs + "ms RTT" : "") :
+                           tradeWsStatus === "connecting" ? "authorizing..." :
+                           tradeWsStatus === "error" ? "connection failed" : "not connected"}
                         </span>
                       </div>
+                      <a href="https://app.deriv.com/account/api-token" target="_blank" rel="noreferrer"
+                        style={{ fontSize:9, color:"var(--cyan)", textDecoration:"none", letterSpacing:1,
+                          padding:"3px 8px", border:"1px solid var(--border)", borderRadius:3, whiteSpace:"nowrap", textAlign:"center" }}>
+                        🔑 Get API Token ↗
+                      </a>
+                    </div>
                     </div>
                   </div>
 
