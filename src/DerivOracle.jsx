@@ -1203,11 +1203,17 @@ export default function DerivOracle() {
           label: (a.is_virtual ? "🎮 DEMO" : "💰 REAL") + " · " + a.loginid + " · " + (a.currency || "USD"),
         }));
         setAccountList(accounts);
-        // Auto-select virtual (demo) by default
+        // Select based on pre-connect mode toggle (demo/real)
         if (!activeAccount) {
           const demo = accounts.find(a => a.is_virtual);
+          const real = accounts.find(a => !a.is_virtual);
+          // Default to demo regardless of execMode — safety first
           const pick = demo || accounts[0];
-          if (pick) { setActiveAccount(pick); }
+          if (pick) {
+            setActiveAccount(pick);
+            setDerivToken(pick.token);
+            setExecLog("✓ Accounts loaded · " + accounts.length + " account(s) · " + pick.label + " selected — switch anytime above.");
+          }
         }
       }
 
@@ -1350,26 +1356,81 @@ export default function DerivOracle() {
   // ── SWITCH ACCOUNT (demo ↔ real) ─────────────────────────────────────────
   const switchAccount = useCallback((account) => {
     if (!account) return;
-    setActiveAccount(account);
-    setDerivToken(account.token);
+    // Disarm first — never switch accounts mid-trade
     setExecArmed(false);
     setExecFiring(false);
-    setExecLog("Switching to " + account.label + " — reconnecting trade WS...");
-    // Re-authorize trade WS with new account token
-    if (tradeWsRef.current && tradeWsRef.current.readyState === WebSocket.OPEN) {
-      tradeWsRef.current.send(JSON.stringify({
-        authorize: account.token,
-        req_id: ++tradeReqIdRef.current,
-      }));
-    } else {
-      connectTradeWS();
+    setTokenValid(false);
+    setActiveAccount(account);
+    setDerivToken(account.token);
+    setExecLog("Switching to " + account.label + " — re-authorizing...");
+
+    // Close and reopen trade WS with the new token
+    if (tradeWsRef.current) {
+      tradeWsRef.current.onclose = null;
+      tradeWsRef.current.close();
+      tradeWsRef.current = null;
     }
-    // Re-authorize data WS for correct balance
+    // Small delay to ensure WS is fully closed before reopening
+    setTimeout(() => {
+      const ws = new WebSocket(DERIV_WS_URL);
+      ws.binaryType = "arraybuffer";
+      tradeWsRef.current = ws;
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ authorize: account.token, req_id: ++tradeReqIdRef.current }));
+      };
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data));
+        if (msg.msg_type === "authorize") {
+          if (msg.error) {
+            setTokenValid(false);
+            setTokenError(msg.error.message);
+            setExecLog("✗ Switch failed: " + msg.error.message);
+            return;
+          }
+          setTokenValid(true);
+          setTokenError("");
+          setBalance(parseFloat(msg.authorize?.balance || 0).toFixed(2));
+          setExecLog("✓ Switched to " + account.label + " · Balance: " + (msg.authorize?.balance || "?") + " " + (account.currency || "USD"));
+        }
+        if (msg.msg_type === "proposal") {
+          if (msg.error) { setExecFiring(false); setExecLog("✗ Proposal: " + msg.error.message); return; }
+          const proposalId = msg.proposal.id;
+          const price = msg.proposal.ask_price;
+          pendingProposalRef.current = { ...pendingProposalRef.current, proposalId, price };
+          ws.send(JSON.stringify({ buy: proposalId, price, req_id: ++tradeReqIdRef.current }));
+        }
+        if (msg.msg_type === "buy") {
+          if (msg.error) { setExecFiring(false); setExecLog("✗ Buy: " + msg.error.message); return; }
+          const rtt = pendingProposalRef.current ? Date.now() - pendingProposalRef.current.t1 : null;
+          if (rtt) setLatencyMs(rtt);
+          ws.send(JSON.stringify({ proposal_open_contracts: 1, contract_id: msg.buy.contract_id, subscribe: 1, req_id: ++tradeReqIdRef.current }));
+          const newTrade = { id: msg.buy.contract_id, time: new Date().toLocaleTimeString(), digit: pendingProposalRef.current?.digit || "?", stake: pendingProposalRef.current?.stake || execStake, status: "PENDING", pnl: null, entrySpot: msg.buy.entry_spot || "?" };
+          execTradesRef.current = [newTrade, ...execTradesRef.current.slice(0, 99)];
+          setExecTrades([...execTradesRef.current]);
+          pendingProposalRef.current = null;
+          setExecFiring(false);
+        }
+        if (msg.msg_type === "proposal_open_contracts") {
+          const c = msg.proposal_open_contracts;
+          if (!c || c.is_sold !== 1) return;
+          const profit = parseFloat(c.profit) || 0;
+          const won = profit > 0;
+          execTradesRef.current = execTradesRef.current.map(t => t.id === c.contract_id ? { ...t, status: won ? "WIN" : "LOSS", pnl: profit, exitSpot: c.exit_tick_display_value || "?" } : t);
+          setExecTrades([...execTradesRef.current]);
+          setExecSessionPnl(prev => parseFloat((prev + profit).toFixed(2)));
+          setExecLog((won ? "✓ WIN" : "✗ LOSS") + " P&L: " + (profit >= 0 ? "+" : "") + profit.toFixed(2) + " USD");
+        }
+        if (msg.msg_type === "balance") setBalance(parseFloat(msg.balance?.balance || 0).toFixed(2));
+      };
+      ws.onerror = () => setExecLog("⚠ WS error after account switch.");
+      ws.onclose = () => setExecLog("Trade WS closed.");
+    }, 200);
+
+    // Re-authorize data WS for correct balance display
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ authorize: account.token }));
     }
-    setConnLog("Switched to " + account.label);
-  }, [connectTradeWS]);
+  }, [execStake]);
 
   const connectWS = useCallback((sym) => {
     // Close existing connection cleanly
@@ -3031,31 +3092,73 @@ export default function DerivOracle() {
                 </div>
 
                 {/* ── ACCOUNT SWITCHER ── */}
-                {accountList.length > 0 && (
-                  <div style={{ marginBottom:10 }}>
-                    <div style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:2, marginBottom:6 }}>SELECT ACCOUNT</div>
-                    <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                      {accountList.map(acc => (
-                        <button key={acc.loginid}
-                          className={"btn" + (activeAccount?.loginid === acc.loginid ? (acc.is_virtual ? " btn-green" : " btn-orange") : "")}
-                          style={{ fontSize:10, padding:"6px 14px", borderColor: acc.is_virtual ? "var(--green)" : "var(--orange)" }}
-                          onClick={() => switchAccount(acc)}>
-                          {acc.label}
-                        </button>
-                      ))}
-                    </div>
-                    {activeAccount && (
-                      <div style={{ fontSize:9, marginTop:6, padding:"4px 10px", borderRadius:3,
-                        background: activeAccount.is_virtual ? "rgba(0,255,136,0.06)" : "rgba(255,165,0,0.08)",
-                        border: "1px solid " + (activeAccount.is_virtual ? "var(--green)" : "var(--orange)"),
-                        color: activeAccount.is_virtual ? "var(--green)" : "var(--orange)" }}>
-                        {activeAccount.is_virtual
-                          ? "🎮 DEMO MODE — virtual funds only · safe to test"
-                          : "⚠ REAL ACCOUNT — trades use real money · proceed carefully"}
-                      </div>
-                    )}
+                {/* ── ACCOUNT SWITCHER — always visible ── */}
+                <div style={{ border:"1px solid var(--border)", borderRadius:4, padding:14, marginBottom:10,
+                  background:"rgba(0,0,0,0.3)" }}>
+                  <div style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:2, marginBottom:10 }}>
+                    ACCOUNT MODE
                   </div>
-                )}
+
+                  {/* Connected: show real account buttons */}
+                  {accountList.length > 0 ? (
+                    <div>
+                      <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:8 }}>
+                        {accountList.map(acc => (
+                          <button key={acc.loginid}
+                            className={"btn" + (activeAccount?.loginid === acc.loginid
+                              ? (acc.is_virtual ? " btn-green" : " btn-orange") : "")}
+                            style={{ fontSize:11, padding:"8px 16px",
+                              borderColor: acc.is_virtual ? "var(--green)" : "var(--orange)",
+                              fontFamily:"var(--head)", letterSpacing:1 }}
+                            onClick={() => switchAccount(acc)}>
+                            {acc.label}
+                          </button>
+                        ))}
+                      </div>
+                      {activeAccount && (
+                        <div style={{ fontSize:10, padding:"8px 12px", borderRadius:3,
+                          background: activeAccount.is_virtual ? "rgba(0,255,136,0.06)" : "rgba(255,80,80,0.08)",
+                          border:"2px solid " + (activeAccount.is_virtual ? "var(--green)" : "var(--red)"),
+                          color: activeAccount.is_virtual ? "var(--green)" : "var(--red)",
+                          letterSpacing:1, lineHeight:1.7 }}>
+                          {activeAccount.is_virtual ? (
+                            <span>🎮 <strong>DEMO MODE ACTIVE</strong> — {activeAccount.loginid}<br/>
+                            <span style={{fontSize:9, opacity:0.8}}>Virtual funds only · results mirror real account · safe to test strategy</span></span>
+                          ) : (
+                            <span>⚠ <strong>REAL ACCOUNT ACTIVE</strong> — {activeAccount.loginid}<br/>
+                            <span style={{fontSize:9, opacity:0.8}}>Every trade uses real money · confirm strategy on demo first</span></span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    /* Not connected yet — show pre-connect toggle */
+                    <div>
+                      <div style={{ display:"flex", gap:6, marginBottom:8 }}>
+                        <button className={"btn" + (execMode === "demo" ? " btn-green" : "")}
+                          style={{ flex:1, padding:"10px", fontSize:11, letterSpacing:1,
+                            borderColor:"var(--green)", fontFamily:"var(--head)" }}
+                          onClick={() => setExecMode("demo")}>
+                          🎮 DEMO
+                        </button>
+                        <button className={"btn" + (execMode === "real" ? " btn-orange" : "")}
+                          style={{ flex:1, padding:"10px", fontSize:11, letterSpacing:1,
+                            borderColor:"var(--orange)", fontFamily:"var(--head)" }}
+                          onClick={() => setExecMode("real")}>
+                          💰 REAL
+                        </button>
+                      </div>
+                      <div style={{ fontSize:9, padding:"6px 10px", borderRadius:3,
+                        background: execMode === "demo" ? "rgba(0,255,136,0.04)" : "rgba(255,80,80,0.06)",
+                        border:"1px solid " + (execMode === "demo" ? "var(--green)" : "var(--red)"),
+                        color: execMode === "demo" ? "var(--green)" : "var(--red)", lineHeight:1.6 }}>
+                        {execMode === "demo"
+                          ? "🎮 DEMO selected — after connecting, demo account will be used automatically"
+                          : "⚠ REAL selected — after connecting, real account will be used · test on demo first"}
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 {/* ── WARNING BANNER ── */}
                 <div style={{ background: activeAccount?.is_virtual ? "rgba(0,255,136,0.04)" : "rgba(255,165,0,0.08)",
