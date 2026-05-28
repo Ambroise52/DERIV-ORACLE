@@ -1,4 +1,4 @@
-/* eslint-disable */
+﻿/* eslint-disable */
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -1575,21 +1575,6 @@ export default function DerivOracle() {
           fireTrade(getLastDigits(updated), tickIndexRef.current);
         }
 
-        // ── PHASE 4: Fire live trade on each tick when armed ────────────
-        if (execArmed && !execFiring) {
-          fireTrade(getLastDigits(updated), tickIndexRef.current);
-        }
-
-        // ── PHASE 4: Fire live trade on each tick when armed ────────────
-        if (execArmed && !execFiring) {
-          fireTrade(getLastDigits(updated), tickIndexRef.current);
-        }
-
-        // ── PHASE 4: Fire live trade on each tick when armed ────
-        if (execArmed && !execFiring) {
-          fireTrade(getLastDigits(updated), tickIndexRef.current);
-        }
-
   // Auto AI every 25 new ticks
         aiCounterRef.current += 1;
         if (autoAIRef.current && aiCounterRef.current % 25 === 0) {
@@ -1597,23 +1582,12 @@ export default function DerivOracle() {
         }
       }
 
-      // Account list — populate demo/real switcher
+      // Account list from data WS — log only; full handling in trade WS
       if (msg.msg_type === "account_list" && msg.account_list) {
-        const accounts = msg.account_list.map(a => ({
-          loginid: a.loginid,
-          is_virtual: a.is_virtual,
-          currency: a.currency || "USD",
-          token: a.token,
-          label: (a.is_virtual ? "🎮 DEMO" : "💰 REAL") + " · " + a.loginid + " · " + (a.currency || "USD"),
-        }));
-        setAccountList(accounts);
-        // Auto-select virtual (demo) account if none selected yet
-        const demo = accounts.find(a => a.is_virtual);
-        if (!activeAccount && demo) {
-          setActiveAccount(demo);
-          setConnLog("✓ Accounts loaded — demo account selected by default. Switch in Execute tab.");
-        }
+        const count = msg.account_list.length;
+        setConnLog("✓ " + count + " account(s) found. Open Execute tab → Connect Trade WS to select account.");
       }
+
 
       // Live balance update
       if (msg.msg_type === "balance" && msg.balance?.balance !== undefined) {
@@ -3128,7 +3102,6 @@ export default function DerivOracle() {
                   )}
                 </div>
 
-                {/* ── ACCOUNT SWITCHER ── */}
                 {/* ── ACCOUNT SWITCHER — always visible ── */}
                 <div style={{ border:"1px solid var(--border)", borderRadius:4, padding:14, marginBottom:10,
                   background:"rgba(0,0,0,0.3)" }}>
