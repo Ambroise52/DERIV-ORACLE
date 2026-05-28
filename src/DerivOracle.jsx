@@ -2484,8 +2484,8 @@ export default function DerivOracle() {
                           <div className="wr-stat-label">WIN RATE</div>
                         </div>
                         <div className="wr-stat">
-                          <div className={`wr-stat-val ${parseFloat(ptStats.totalPnl) >= 0 ? "green" : "red"}`}>{parseFloat(ptStats.totalPnl) >= 0 ? "+" : ""}${ptStats.totalPnl}</div>
-                          <div className="wr-stat-label">TOTAL P&L</div>
+                          <div className={`wr-stat-val ${parseFloat(ptStats.totalPnl) >= 0 ? "green" : "red"}`}>{parseFloat(ptStats.totalPnl) >= 0 ? "+" : ""}{"$"}{ptStats.totalPnl}</div>
+                          <div className="wr-stat-label">TOTAL P&amp;L</div>
                         </div>
                         <div className="wr-stat">
                           <div className="wr-stat-val cyan">{ptStats.wins}W / {ptStats.losses}L</div>
@@ -2596,7 +2596,7 @@ export default function DerivOracle() {
                       <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
                         <span style={{ fontSize: 11, color: "var(--text-dim)" }}>Balance $</span>
                         <input className="kelly-input" type="number" value={paperBalance} readOnly />
-                        <span style={{ fontSize: 13, color: "var(--green)" }}>→ ${(paperBalance * (predictTopPick?.halfKelly || 0) / 100).toFixed(2)}</span>
+                        <span style={{ fontSize: 13, color: "var(--green)" }>{"→ $"}{(paperBalance * (predictTopPick?.halfKelly || 0) / 100).toFixed(2)}</span>
                       </div>
                       <button className="btn btn-green" style={{ marginTop: 8 }}
                         onClick={() => { setActiveTab("papertrade"); logPaperTrade(predictTopPick.digit, predictTopPick.confidence, predictTopPick.winProb, predictTopPick.halfKelly, predictTopPick.betType); }}>
@@ -2664,11 +2664,11 @@ export default function DerivOracle() {
                 <div className="panel">
                   <div className="panel-title"><span className="dot dot-green" />Session P&amp;L</div>
                   <div style={{ fontSize: 32, fontWeight: 700, fontFamily: "var(--head)" }} className={parseFloat(ptStats.totalPnl) >= 0 ? "pnl-positive" : "pnl-negative"}>
-                    {parseFloat(ptStats.totalPnl) >= 0 ? "+" : ""}${ptStats.totalPnl}
+                    {parseFloat(ptStats.totalPnl) >= 0 ? "+" : ""}{"$"}{ptStats.totalPnl}
                   </div>
                   <div className="stat-row" style={{ marginTop: 8 }}>
                     <span className="stat-label">Virtual Balance</span>
-                    <span className="stat-val green">${paperBalance.toFixed(2)}</span>
+                    <span className="stat-val green">{"$"}{paperBalance.toFixed(2)}</span>
                   </div>
                   <div className="stat-row">
                     <span className="stat-label">Started With</span>
@@ -2690,7 +2690,7 @@ export default function DerivOracle() {
                   </div>
                   {pendingTrade && (
                     <div style={{ marginTop: 8, padding: "6px 10px", background: "var(--yellow-dim)", border: "1px solid var(--yellow)", borderRadius: 3, fontSize: 11 }}>
-                      <span className="yellow">⏳ PENDING: Digit {pendingTrade.digit} | ${pendingTrade.stake} stake</span>
+                      <span className="yellow">{"⏳ PENDING: Digit "}{pendingTrade.digit}{" | $"}{pendingTrade.stake}{" stake"}</span>
                     </div>
                   )}
                 </div>
@@ -2813,7 +2813,7 @@ export default function DerivOracle() {
                             <td style={{ color: "var(--cyan)", fontWeight: 700 }}>{t.digit}</td>
                             <td style={{ color: t.betType === "MATCHES" ? "var(--orange)" : "var(--cyan)", fontSize: 9, letterSpacing: 1 }}>{t.betType || "MATCHES"}</td>
                             <td className="yellow">{t.confidence}%</td>
-                            <td>${t.stake}</td>
+                            <td>{"$"}{t.stake}</td>
                             <td className={t.result === "WIN" ? "pt-win" : t.result === "LOSS" ? "pt-loss" : "pt-pending"}>
                               {t.result === "WIN" ? "✓ WIN" : t.result === "LOSS" ? "✗ LOSS" : "⏳ PENDING"}
                             </td>
@@ -2943,7 +2943,7 @@ export default function DerivOracle() {
                           <div>
                             <div style={{ fontSize: 12, color: "var(--cyan)", fontFamily: "var(--head)", letterSpacing: 1 }}>🤖 {bot.name}</div>
                             <div style={{ fontSize: 9, color: "var(--text-dim)", marginTop: 3 }}>
-                              {bot.strategy} · Stake ${bot.stake} · Martingale {bot.martingale}× · Saved {bot.savedAt ? bot.savedAt.slice(0,10) : "?"}
+                              {bot.strategy} {"· Stake $"}{bot.stake}{"· Martingale"} {bot.martingale}× · Saved {bot.savedAt ? bot.savedAt.slice(0,10) : "?"}
                             </div>
                             {bot.improvedXml && <div style={{ fontSize: 9, color: "var(--green)", marginTop: 2 }}>✨ AI-improved version available</div>}
                           </div>
@@ -3338,7 +3338,7 @@ export default function DerivOracle() {
                       textAlign:"center", marginTop:6, letterSpacing:1,
                       padding:"5px 10px", borderRadius:3,
                       background: activeAccount?.is_virtual ? "rgba(0,255,136,0.06)" : "rgba(255,165,0,0.08)" }}>
-                      {activeAccount?.is_virtual ? "🎮 DEMO" : "⚠ REAL"} · DIGITDIFF DIFFERS · digit updates live · ${execStake} stake · {symbol}
+                      {activeAccount?.is_virtual ? "🎮 DEMO" : "⚠ REAL"}{" · DIGITDIFF DIFFERS · digit updates live · $"}{execStake}{" stake · "}{symbol}
                     </div>
                   )}
                 </div>
@@ -3365,7 +3365,7 @@ export default function DerivOracle() {
                         <div key={t.id || i} className={"execute-log-row " + (t.status === "WIN" ? "win" : t.status === "LOSS" ? "loss" : "pending")}>
                           <span style={{ color:"var(--text-dim)" }}>{t.time}</span>
                           <span style={{ color:"var(--cyan)" }}>≠{t.digit}</span>
-                          <span>${t.stake}</span>
+                          <span>{"$"}{t.stake}</span>
                           <span style={{ color: t.status === "WIN" ? "var(--green)" : t.status === "LOSS" ? "var(--red)" : "var(--yellow)" }}>
                             {t.status}
                           </span>
@@ -3405,7 +3405,7 @@ export default function DerivOracle() {
                 {activeAccount?.is_virtual ? " DEMO (virtual funds)" : " REAL account"}
               </strong>.
               Each tick will place a DIGITDIFF DIFFERS contract on <strong style={{ color:"var(--cyan)" }}>{symbol}</strong> at
-              <strong style={{ color:"var(--green)" }}> ${execStake}</strong> stake using the live coldest digit.
+              <strong style={{ color:"var(--green)" }}>{"$"}{execStake}</strong>{" stake using the live coldest digit."}
               <br/><br/>
               <span style={{ color:"var(--orange)" }}>Romans 8:28 — all things work together for good.</span>
             </div>
