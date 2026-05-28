@@ -1068,9 +1068,11 @@ export default function DerivOracle() {
   // ── AUTH + ACCOUNT STATE ──────────────────────────────────────────────────
   const [derivToken, setDerivToken] = useState(DERIV_TOKEN_DEFAULT);
   const [tokenInput, setTokenInput] = useState("");
-  const [accountList, setAccountList] = useState([]);   // [{loginid, is_virtual, currency, token}]
-  const [activeAccount, setActiveAccount] = useState(null); // selected account object
-  const [showTokenSetup, setShowTokenSetup] = useState(!DERIV_TOKEN_DEFAULT);
+  const [tokenValid, setTokenValid] = useState(false);  // true only after successful auth
+  const [tokenError, setTokenError] = useState("");
+  const [accountList, setAccountList] = useState([]);
+  const [activeAccount, setActiveAccount] = useState(null);
+  const [showTokenSetup, setShowTokenSetup] = useState(true); // always show token panel
 
   // ── PHASE 4: EXECUTE STATE ───────────────────────────────────────────────
   const tradeWsRef = useRef(null);          // dedicated trade WebSocket
@@ -1179,8 +1181,34 @@ export default function DerivOracle() {
       );
 
       if (msg.msg_type === "authorize") {
-        if (msg.error) { setExecLog("Auth error: " + msg.error.message); return; }
-        setExecLog("✓ Trade WS authorized — " + (msg.authorize?.loginid || "") + " — ready.");
+        if (msg.error) {
+          setTokenValid(false);
+          setTokenError(msg.error.message);
+          setExecLog("✗ Auth failed: " + msg.error.message + " — paste a fresh token below.");
+          return;
+        }
+        setTokenValid(true);
+        setTokenError("");
+        setExecLog("✓ Authorized — " + (msg.authorize?.loginid || "") + " · " + (msg.authorize?.is_virtual ? "DEMO" : "REAL") + " — ready to trade.");
+        // Request account list for switcher
+        tradeWsRef.current.send(JSON.stringify({ account_list: 1, req_id: ++tradeReqIdRef.current }));
+      }
+
+      if (msg.msg_type === "account_list" && msg.account_list) {
+        const accounts = msg.account_list.map(a => ({
+          loginid: a.loginid,
+          is_virtual: a.is_virtual,
+          currency: a.currency || "USD",
+          token: a.token,
+          label: (a.is_virtual ? "🎮 DEMO" : "💰 REAL") + " · " + a.loginid + " · " + (a.currency || "USD"),
+        }));
+        setAccountList(accounts);
+        // Auto-select virtual (demo) by default
+        if (!activeAccount) {
+          const demo = accounts.find(a => a.is_virtual);
+          const pick = demo || accounts[0];
+          if (pick) { setActiveAccount(pick); }
+        }
       }
 
       if (msg.msg_type === "proposal") {
@@ -2933,25 +2961,74 @@ export default function DerivOracle() {
             const latClass = latencyMs === null ? "latency-ok" : latencyMs < 80 ? "latency-good" : latencyMs < 200 ? "latency-ok" : "latency-bad";
             return (
               <div>
-                {/* ── TOKEN SETUP ── */}
-                {(!derivToken && !activeAccount) && (
-                  <div style={{ background:"rgba(255,165,0,0.08)", border:"1px solid var(--orange)", borderRadius:4, padding:14, marginBottom:10 }}>
-                    <div style={{ fontSize:11, color:"var(--orange)", letterSpacing:2, marginBottom:8 }}>⚠ API TOKEN REQUIRED</div>
-                    <div style={{ fontSize:10, color:"var(--text-dim)", marginBottom:10, lineHeight:1.7 }}>
-                      Go to <strong style={{color:"var(--cyan)"}}>app.deriv.com → Account Settings → API Token</strong><br/>
-                      Create a token with <strong style={{color:"var(--text)"}}>Read + Trade</strong> scope. Paste it below.
+                {/* ── TOKEN SETUP — always visible ── */}
+                <div style={{ border:"1px solid " + (tokenValid ? "var(--green)" : tokenError ? "var(--red)" : "var(--border)"),
+                  borderRadius:4, padding:14, marginBottom:10,
+                  background: tokenValid ? "rgba(0,255,136,0.04)" : tokenError ? "rgba(255,50,50,0.06)" : "rgba(0,0,0,0.3)" }}>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+                    <div style={{ fontSize:10, letterSpacing:2,
+                      color: tokenValid ? "var(--green)" : tokenError ? "var(--red)" : "var(--text-dim)" }}>
+                      🔑 DERIV API TOKEN
                     </div>
-                    <div style={{ display:"flex", gap:8 }}>
-                      <input className="stake-input" placeholder="paste your Deriv API token here..."
-                        value={tokenInput} onChange={e => setTokenInput(e.target.value)}
-                        style={{ flex:1, fontSize:11 }}/>
-                      <button className="btn btn-green" style={{ fontSize:10, padding:"8px 14px", whiteSpace:"nowrap" }}
-                        onClick={() => { if(tokenInput.trim()) { setDerivToken(tokenInput.trim()); setTokenInput(""); setShowTokenSetup(false); }}}>
-                        Save Token
-                      </button>
+                    <div style={{ fontSize:9, letterSpacing:1,
+                      color: tokenValid ? "var(--green)" : tokenError ? "var(--red)" : "var(--yellow)" }}>
+                      {tokenValid ? "✓ VALID" : tokenError ? "✗ INVALID" : "⚪ NOT VERIFIED"}
                     </div>
                   </div>
-                )}
+
+                  {tokenError && (
+                    <div style={{ fontSize:10, color:"var(--red)", background:"rgba(255,50,50,0.08)",
+                      border:"1px solid var(--red)", borderRadius:3, padding:"6px 10px", marginBottom:8 }}>
+                      ✗ {tokenError}
+                    </div>
+                  )}
+
+                  <div style={{ fontSize:9, color:"var(--text-dim)", marginBottom:8, lineHeight:1.6 }}>
+                    Get your token: <a href="https://app.deriv.com/account/api-token" target="_blank" rel="noreferrer"
+                      style={{ color:"var(--cyan)" }}>app.deriv.com → API Token ↗</a>
+                    {" "}· Requires <strong style={{color:"var(--text)"}}>Read + Trade</strong> scope
+                  </div>
+
+                  <div style={{ display:"flex", gap:8 }}>
+                    <input className="stake-input"
+                      placeholder={derivToken ? "paste new token to replace current..." : "paste your Deriv API token here..."}
+                      value={tokenInput}
+                      onChange={e => setTokenInput(e.target.value)}
+                      onKeyDown={e => { if(e.key === "Enter" && tokenInput.trim()) {
+                        setDerivToken(tokenInput.trim()); setTokenValid(false); setTokenError("");
+                        setTokenInput(""); setAccountList([]); setActiveAccount(null);
+                      }}}
+                      style={{ flex:1, fontSize:11 }}
+                      type="password"
+                      autoComplete="off"
+                    />
+                    <button className={"btn" + (tokenInput.trim() ? " btn-green" : "")}
+                      style={{ fontSize:10, padding:"8px 14px", whiteSpace:"nowrap" }}
+                      onClick={() => {
+                        if(tokenInput.trim()) {
+                          setDerivToken(tokenInput.trim());
+                          setTokenValid(false);
+                          setTokenError("");
+                          setTokenInput("");
+                          setAccountList([]);
+                          setActiveAccount(null);
+                          setExecLog("Token saved — click Connect Trade WS to verify.");
+                        }
+                      }}>
+                      Save &amp; Use
+                    </button>
+                  </div>
+
+                  {derivToken && !tokenInput && (
+                    <div style={{ fontSize:9, color:"var(--text-dim)", marginTop:6 }}>
+                      Token set {tokenValid ? "and verified ✓" : "— connect to verify"}
+                      {" · "}<span style={{ cursor:"pointer", color:"var(--red)", textDecoration:"underline" }}
+                        onClick={() => { setDerivToken(""); setTokenValid(false); setTokenError(""); setAccountList([]); setActiveAccount(null); }}>
+                        clear
+                      </span>
+                    </div>
+                  )}
+                </div>
 
                 {/* ── ACCOUNT SWITCHER ── */}
                 {accountList.length > 0 && (
