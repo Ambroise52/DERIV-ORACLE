@@ -472,14 +472,25 @@ const css = `
   .two-col{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
   .three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
   .divider{border:none;border-top:1px solid var(--border);margin:10px 0;}
-  /* Tabs */
-  .tabs{display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid var(--border);overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
-  .tab{padding:8px 12px;font-family:var(--head);font-size:11px;letter-spacing:2px;
+  /* Tabs — grouped nav */
+  .tabs-wrapper{margin-bottom:12px;}
+  .tabs-row{display:flex;gap:0;border-bottom:1px solid var(--border);flex-wrap:wrap;}
+  .tab-group{display:flex;gap:1px;padding:0 6px 0 0;margin-right:6px;border-right:1px solid var(--border2);}
+  .tab-group:last-child{border-right:none;margin-right:0;padding-right:0;}
+  .tabs{display:flex;gap:2px;margin-bottom:0;border-bottom:none;}
+  .tab{padding:7px 11px;font-family:var(--head);font-size:10px;letter-spacing:1.5px;
     text-transform:uppercase;cursor:pointer;border:none;background:transparent;
-    color:var(--text-dim);border-bottom:2px solid transparent;margin-bottom:-1px;transition:all 0.2s;}
+    color:var(--text-dim);border-bottom:2px solid transparent;margin-bottom:-1px;transition:all 0.2s;white-space:nowrap;}
   .tab.active{color:var(--green);border-bottom-color:var(--green);}
   .tab:hover:not(.active){color:var(--text);}
-  /* Chips */
+  .tab-group-badge{font-size:7px;letter-spacing:2px;color:var(--text-dim);padding:2px 6px;
+    font-family:var(--head);opacity:0.4;align-self:center;margin-right:2px;}
+  .tab-mobile-select{display:none;width:100%;background:var(--bg2);border:1px solid var(--border);
+    color:var(--green);font-family:var(--head);font-size:11px;letter-spacing:1px;
+    padding:9px 12px;border-radius:3px;margin-bottom:8px;cursor:pointer;
+    -webkit-appearance:none;appearance:none;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2300ff88' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 12px center;}
   .last-digits-row{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px;}
   .ld-chip{width:28px;height:28px;display:flex;align-items:center;justify-content:center;
     border-radius:3px;font-size:12px;font-weight:700;border:1px solid var(--border);}
@@ -699,10 +710,10 @@ const css = `
     .symbol-bar{gap:4px;}
   }
   @media(max-width:700px){
-    .tabs{overflow-x:auto;flex-wrap:nowrap;padding-bottom:2px;-webkit-overflow-scrolling:touch;}
-    .tabs::-webkit-scrollbar{height:2px;}
-    .tabs::-webkit-scrollbar-thumb{background:var(--border2);}
-    .tab{white-space:nowrap;font-size:9px;padding:7px 10px;letter-spacing:1px;}
+    .tabs-row{flex-wrap:wrap;}
+    .tab-group{flex-wrap:wrap;border-right:none;padding-right:0;margin-right:0;}
+    .tab{font-size:9px;padding:7px 9px;letter-spacing:1px;}
+    .bot-tabs{overflow-x:auto;flex-wrap:nowrap;}
     .bot-tabs{overflow-x:auto;flex-wrap:nowrap;}
     .bot-tab{white-space:nowrap;font-size:9px;padding:5px 10px;}
     .live-stats{flex-wrap:wrap;gap:8px;padding:8px 10px;}
@@ -730,8 +741,8 @@ const css = `
     .predict-card{padding:10px;}
   }
   @media(max-width:480px){
-    .tabs{gap:1px;}
-    .tab{font-size:8px;padding:6px 8px;}
+    .tab-mobile-select{display:block;}
+    .tabs-row{display:none;}
     .live-stat{min-width:100%;flex:auto;}
     .bot-params{grid-template-columns:1fr 1fr;}
     .digit-freq-grid{grid-template-columns:repeat(5,1fr);}
@@ -2126,14 +2137,47 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* TABS */}
-          {ticks.length > 0 && (
-            <div className="tabs">
-              {[["overview","Overview"],["evenodd","Even/Odd"],["risefall","Rise/Fall"],["matchdiffer","Matches/Differs"],["overunder","Over/Under"],["signals","⚡ Signals"],["predict","🎯 Predict"],["papertrade","📋 Paper Trade"],["bots","🤖 Bots"],["execute","⚡ Execute"],["under5","🎯 Under 5"]].map(([id, label]) => (
-                <button key={id} className={`tab ${activeTab === id ? "active" : ""}`} onClick={() => setActiveTab(id)}>{label}</button>
-              ))}
-            </div>
-          )}
+          {/* TABS -- grouped nav + mobile dropdown */}
+          {ticks.length > 0 && (() => {
+            const TAB_GROUPS = [
+              { label:"ANALYSIS", tabs:[["overview","Overview"],["evenodd","Even/Odd"],["risefall","Rise/Fall"],["matchdiffer","Matches/Differs"],["overunder","Over/Under"]] },
+              { label:"TOOLS", tabs:[["signals","Signals"],["predict","Predict"],["under5","Under 5"]] },
+              { label:"TRADE", tabs:[["papertrade","Paper Trade"],["bots","Bots"],["execute","Execute"]] },
+            ];
+            const allTabs = TAB_GROUPS.flatMap(g => g.tabs);
+            return (
+              <div className="tabs-wrapper">
+                <select
+                  className="tab-mobile-select"
+                  value={activeTab}
+                  onChange={e => setActiveTab(e.target.value)}
+                >
+                  {TAB_GROUPS.map(g => (
+                    <optgroup key={g.label} label={"-- " + g.label + " --"}>
+                      {g.tabs.map(([id, label]) => (
+                        <option key={id} value={id}>{label}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <div className="tabs-row">
+                  {TAB_GROUPS.map((group) => (
+                    <div key={group.label} className="tab-group">
+                      <span className="tab-group-badge">{group.label}</span>
+                      {group.tabs.map(([id, label]) => (
+                        <button
+                          key={id}
+                          className={"tab" + (activeTab === id ? " active" : "")}
+                          onClick={() => setActiveTab(id)}
+                          title={group.label + ": " + label}
+                        >{label}</button>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* ---- OVERVIEW TAB ---- */}
           {activeTab === "overview" && ticks.length > 0 && (
@@ -3465,7 +3509,7 @@ export default function DerivOracle() {
           )}
 
 
-          {/* ── 🎯 UNDER 5 PREDICTOR TAB ── */}
+          {/* -- UNDER 5 PREDICTOR TAB -- */}
           {activeTab === "under5" && (
             <div>
               {/* Live stats bar */}
@@ -3483,7 +3527,7 @@ export default function DerivOracle() {
                 ))}
               </div>
 
-              {/* Last 30 digits visual — green=under5, red=over4 */}
+              {/* Last 30 digits visual - green=under5, red=over4 */}
               <div className="u5-panel">
                 <div style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:2, marginBottom:8 }}>
                   LAST 30 DIGITS · GREEN = UNDER 5 · RED = 5 OR ABOVE
