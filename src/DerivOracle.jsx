@@ -1878,6 +1878,16 @@ export default function DerivOracle() {
   const statusClass = { idle: "pill-demo", connecting: "pill-connecting", live: "pill-live", error: "pill-error", demo: "pill-demo" };
   const statusLabel = { idle: "OFFLINE", connecting: "CONNECTING...", live: "● LIVE", error: "ERROR", demo: "DEMO MODE" };
 
+  // ── Execute tab computed vars (extracted from JSX IIFE) ────────────────────
+  const execColdDigit = hotCold.cold.length > 0 ? hotCold.cold[0] : null;
+  const execHotDigit  = hotCold.hot.length  > 0 ? hotCold.hot[0]  : null;
+  const execWins   = execTradesRef.current.filter(t => t.status === "WIN").length;
+  const execLosses = execTradesRef.current.filter(t => t.status === "LOSS").length;
+  const execTotal  = execWins + execLosses;
+  const execWR     = execTotal > 0 ? ((execWins / execTotal) * 100).toFixed(1) : "—";
+  const execLatClass = latencyMs === null ? "latency-ok" : latencyMs < 80 ? "latency-good" : latencyMs < 200 ? "latency-ok" : "latency-bad";
+
+
   return (
     <>
       <style>{css}</style>
@@ -3017,15 +3027,7 @@ export default function DerivOracle() {
 
 
           {/* ── ⚡ EXECUTE TAB — PHASE 4 ── */}
-          {activeTab === "execute" && (() => {
-            const coldDigit = hotCold.cold.length > 0 ? hotCold.cold[0] : null;
-            const hotDigit  = hotCold.hot.length  > 0 ? hotCold.hot[0]  : null;
-            const wins  = execTradesRef.current.filter(t => t.status === "WIN").length;
-            const losses = execTradesRef.current.filter(t => t.status === "LOSS").length;
-            const total  = wins + losses;
-            const wr     = total > 0 ? ((wins / total) * 100).toFixed(1) : "—";
-            const latClass = latencyMs === null ? "latency-ok" : latencyMs < 80 ? "latency-good" : latencyMs < 200 ? "latency-ok" : "latency-bad";
-            return (
+          {activeTab === "execute" && (
               <div>
                 {/* ── TOKEN SETUP — always visible ── */}
                 <div style={{ border:"1px solid " + (tokenValid ? "var(--green)" : tokenError ? "var(--red)" : "var(--border)"),
@@ -3183,19 +3185,19 @@ export default function DerivOracle() {
 
                 {/* ── LIVE SIGNAL DISPLAY ── */}
                 <div className="execute-grid" style={{ marginBottom:10 }}>
-                  <div className={"signal-live" + (coldDigit !== null ? " hot" : "")}>
+                  <div className={"signal-live" + (execColdDigit !== null ? " hot" : "")}>
                     <div className="signal-live-label">⚡ DIFFERS TARGET · COLDEST DIGIT</div>
                     <div className="signal-live-val" style={{ color:"var(--green)" }}>
-                      {coldDigit !== null ? coldDigit : "—"}
+                      {execColdDigit !== null ? execColdDigit : "—"}
                     </div>
                     <div style={{ fontSize:9, color:"var(--text-dim)" }}>
-                      {coldDigit !== null ? "Least frequent — best DIFFERS prediction" : "Need 20+ ticks"}
+                      {execColdDigit !== null ? "Least frequent — best DIFFERS prediction" : "Need 20+ ticks"}
                     </div>
                   </div>
                   <div className="signal-live">
                     <div className="signal-live-label">🔥 HOT DIGIT · MOST FREQUENT</div>
                     <div className="signal-live-val" style={{ color:"var(--orange)" }}>
-                      {hotDigit !== null ? hotDigit : "—"}
+                      {execHotDigit !== null ? execHotDigit : "—"}
                     </div>
                     <div style={{ fontSize:9, color:"var(--text-dim)" }}>Appearing most — avoid as DIFFERS target</div>
                   </div>
@@ -3207,7 +3209,7 @@ export default function DerivOracle() {
                     [total || "0", "TRADES", "var(--cyan)"],
                     [wins, "WINS", "var(--green)"],
                     [losses, "LOSSES", "var(--red)"],
-                    [wr === "—" ? "—" : wr + "%", "WIN RATE", wr !== "—" && parseFloat(wr) >= 47.4 ? "var(--green)" : "var(--yellow)"],
+                    [wr === "—" ? "—" : execWR + "%", "WIN RATE", execWR !== "—" && parseFloat(wr) >= 47.4 ? "var(--green)" : "var(--yellow)"],
                   ].map(([val,label,color]) => (
                     <div key={label} className="exec-stat">
                       <div className="exec-stat-val" style={{ color }}>{val}</div>
@@ -3353,8 +3355,7 @@ export default function DerivOracle() {
                   )}
                 </div>
               </div>
-            );
-          })()}
+          )}
 
           {/* PHASE 2 TEASER */}
           <div className="phase2-banner">
