@@ -1990,7 +1990,7 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* DIGIT FREQUENCY — always visible when data loaded */}
+          {/* DIGIT FREQUENCY -- always visible when data loaded */}
           {digits.length > 0 && (
             <div className="panel" style={{ marginBottom: 12 }}>
               <div className="panel-title"><span className="dot dot-orange" />Last Digit Frequency — {symbol}</div>
@@ -2028,7 +2028,7 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* ── OVERVIEW TAB ── */}
+          {/* ---- OVERVIEW TAB ---- */}
           {activeTab === "overview" && ticks.length > 0 && (
             <>
               <div className="grid-3">
@@ -2165,7 +2165,7 @@ export default function DerivOracle() {
             </>
           )}
 
-          {/* ── EVEN/ODD TAB ── */}
+          {/* ---- EVEN/ODD TAB ---- */}
           {activeTab === "evenodd" && evenOdd && (
             <div className="grid-2">
               <div className="panel accent-cyan">
@@ -2223,7 +2223,7 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* ── RISE/FALL TAB ── */}
+          {/* ---- RISE/FALL TAB ---- */}
           {activeTab === "risefall" && riseFall && (
             <div className="grid-2">
               <div className="panel accent-orange">
@@ -2267,7 +2267,7 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* ── MATCHES/DIFFERS TAB ── */}
+          {/* ---- MATCHES/DIFFERS TAB ---- */}
           {activeTab === "matchdiffer" && matchesDiffers && (
             <div className="grid-2">
               <div className="panel accent-orange">
@@ -2317,7 +2317,7 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* ── OVER/UNDER TAB ── */}
+          {/* ---- OVER/UNDER TAB ---- */}
           {activeTab === "overunder" && overUnder && (
             <div className="grid-2">
               <div className="panel accent-yellow">
@@ -2370,7 +2370,7 @@ export default function DerivOracle() {
 
 
 
-          {/* ── SIGNALS TAB ── */}
+          {/* ---- SIGNALS TAB ---- */}
           {activeTab === "signals" && (
             <>
               {!allSignals ? (
@@ -2544,7 +2544,7 @@ export default function DerivOracle() {
             </>
           )}
 
-          {/* ── PREDICT TAB ── */}
+          {/* ---- PREDICT TAB ---- */}
           {activeTab === "predict" && digits.length >= 50 && predictTopPick && (
             <>
                 {/* TOP PICK BANNER */}
@@ -2641,7 +2641,7 @@ export default function DerivOracle() {
             <div className="panel"><div className="empty-state">Need at least 50 ticks for reliable predictions. {digits.length}/50 loaded. Connect live — historical data loads automatically.</div></div>
           )}
 
-          {/* ── PAPER TRADE TAB ── */}
+          {/* ---- PAPER TRADE TAB ---- */}
           {activeTab === "papertrade" && (
             <>
               {/* Summary stats */}
@@ -2830,7 +2830,7 @@ export default function DerivOracle() {
           )}
 
 
-          {/* ── 🤖 BOTS TAB ── */}
+          {/* ---- BOTS TAB ---- */}
           {activeTab === "bots" && (
             <div>
               {/* Sub-tabs */}
@@ -3026,10 +3026,10 @@ export default function DerivOracle() {
           )}
 
 
-          {/* ── ⚡ EXECUTE TAB — PHASE 4 ── */}
+          {/* ---- EXECUTE TAB -- PHASE 4 ---- */}
           {activeTab === "execute" && (
               <div>
-                {/* ── TOKEN SETUP — always visible ── */}
+                {/* ---- TOKEN SETUP -- always visible ---- */}
                 <div style={{ border:"1px solid " + (tokenValid ? "var(--green)" : tokenError ? "var(--red)" : "var(--border)"),
                   borderRadius:4, padding:14, marginBottom:10,
                   background: tokenValid ? "rgba(0,255,136,0.04)" : tokenError ? "rgba(255,50,50,0.06)" : "rgba(0,0,0,0.3)" }}>
@@ -3105,7 +3105,7 @@ export default function DerivOracle() {
                   )}
                 </div>
 
-                {/* ── ACCOUNT SWITCHER — always visible ── */}
+                {/* ---- ACCOUNT SWITCHER -- always visible ---- */}
                 <div style={{ border:"1px solid var(--border)", borderRadius:4, padding:14, marginBottom:10,
                   background:"rgba(0,0,0,0.3)" }}>
                   <div style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:2, marginBottom:10 }}>
@@ -3173,7 +3173,7 @@ export default function DerivOracle() {
                   )}
                 </div>
 
-                {/* ── WARNING BANNER ── */}
+                {/* ---- WARNING BANNER ---- */}
                 <div style={{ background: activeAccount?.is_virtual ? "rgba(0,255,136,0.04)" : "rgba(255,165,0,0.08)",
                   border:"1px solid " + (activeAccount?.is_virtual ? "var(--green)" : "var(--orange)"),
                   borderRadius:4, padding:"8px 14px", marginBottom:10, fontSize:10,
@@ -3183,7 +3183,7 @@ export default function DerivOracle() {
                     : "⚠ REAL ACCOUNT — DIFFERS on " + symbol + " · Start with $0.35 minimum stake · " + (activeAccount?.loginid || "")}
                 </div>
 
-                {/* ── LIVE SIGNAL DISPLAY ── */}
+                {/* ---- LIVE SIGNAL DISPLAY ---- */}
                 <div className="execute-grid" style={{ marginBottom:10 }}>
                   <div className={"signal-live" + (execColdDigit !== null ? " hot" : "")}>
                     <div className="signal-live-label">⚡ DIFFERS TARGET · COLDEST DIGIT</div>
@@ -3203,7 +3203,7 @@ export default function DerivOracle() {
                   </div>
                 </div>
 
-                {/* ── SESSION STATS ── */}
+                {/* ---- SESSION STATS ---- */}
                 <div className="exec-stat-row">
                   {[
                     [total || "0", "TRADES", "var(--cyan)"],
@@ -3231,7 +3231,7 @@ export default function DerivOracle() {
                   ))}
                 </div>
 
-                {/* ── CONTROLS ── */}
+                {/* ---- CONTROLS ---- */}
                 <div className="panel" style={{ marginBottom:10 }}>
                   <div className="panel-title"><span className="dot dot-orange"/>Trade Controls</div>
 
@@ -3319,7 +3319,7 @@ export default function DerivOracle() {
                   )}
                 </div>
 
-                {/* ── TRADE LOG ── */}
+                {/* ---- TRADE LOG ---- */}
                 <div className="panel">
                   <div className="panel-title" style={{ justifyContent:"space-between" }}>
                     <span><span className="dot dot-green"/>Live Trade Log ({execTradesRef.current.length})</span>
@@ -3366,7 +3366,7 @@ export default function DerivOracle() {
         </div>
       </div>
 
-      {/* ── CONFIRM ARM OVERLAY ── */}
+      {/* ---- CONFIRM ARM OVERLAY ---- */}
       {showConfirm && (
         <div className="confirm-overlay" onClick={() => setShowConfirm(false)}>
           <div className="confirm-box" onClick={e => e.stopPropagation()}>
