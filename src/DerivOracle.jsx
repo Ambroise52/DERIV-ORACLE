@@ -472,25 +472,25 @@ const css = `
   .two-col{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
   .three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
   .divider{border:none;border-top:1px solid var(--border);margin:10px 0;}
-  /* Tabs — grouped nav */
+  /* Tabs - grouped nav */
   .tabs-wrapper{margin-bottom:12px;}
   .tabs-row{display:flex;gap:0;border-bottom:1px solid var(--border);flex-wrap:wrap;}
   .tab-group{display:flex;gap:1px;padding:0 6px 0 0;margin-right:6px;border-right:1px solid var(--border2);}
   .tab-group:last-child{border-right:none;margin-right:0;padding-right:0;}
-  .tabs{display:flex;gap:2px;margin-bottom:0;border-bottom:none;}
-  .tab{padding:7px 11px;font-family:var(--head);font-size:10px;letter-spacing:1.5px;
+  .tab-group-badge{font-size:7px;letter-spacing:2px;color:var(--text-dim);padding:2px 4px;
+    font-family:var(--head);opacity:0.45;align-self:center;margin-right:2px;white-space:nowrap;}
+  .tab{padding:7px 10px;font-family:var(--head);font-size:10px;letter-spacing:1.5px;
     text-transform:uppercase;cursor:pointer;border:none;background:transparent;
     color:var(--text-dim);border-bottom:2px solid transparent;margin-bottom:-1px;transition:all 0.2s;white-space:nowrap;}
   .tab.active{color:var(--green);border-bottom-color:var(--green);}
   .tab:hover:not(.active){color:var(--text);}
-  .tab-group-badge{font-size:7px;letter-spacing:2px;color:var(--text-dim);padding:2px 6px;
-    font-family:var(--head);opacity:0.4;align-self:center;margin-right:2px;}
   .tab-mobile-select{display:none;width:100%;background:var(--bg2);border:1px solid var(--border);
     color:var(--green);font-family:var(--head);font-size:11px;letter-spacing:1px;
-    padding:9px 12px;border-radius:3px;margin-bottom:8px;cursor:pointer;
+    padding:9px 12px;border-radius:3px;margin-bottom:10px;cursor:pointer;
     -webkit-appearance:none;appearance:none;
     background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2300ff88' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
     background-repeat:no-repeat;background-position:right 12px center;}
+  /* Chips */
   .last-digits-row{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px;}
   .ld-chip{width:28px;height:28px;display:flex;align-items:center;justify-content:center;
     border-radius:3px;font-size:12px;font-weight:700;border:1px solid var(--border);}
@@ -2137,14 +2137,13 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* TABS -- grouped nav + mobile dropdown */}
+          {/* TABS - grouped nav + mobile dropdown */}
           {ticks.length > 0 && (() => {
             const TAB_GROUPS = [
               { label:"ANALYSIS", tabs:[["overview","Overview"],["evenodd","Even/Odd"],["risefall","Rise/Fall"],["matchdiffer","Matches/Differs"],["overunder","Over/Under"]] },
               { label:"TOOLS", tabs:[["signals","Signals"],["predict","Predict"],["under5","Under 5"]] },
               { label:"TRADE", tabs:[["papertrade","Paper Trade"],["bots","Bots"],["execute","Execute"]] },
             ];
-            const allTabs = TAB_GROUPS.flatMap(g => g.tabs);
             return (
               <div className="tabs-wrapper">
                 <select
@@ -3509,7 +3508,7 @@ export default function DerivOracle() {
           )}
 
 
-          {/* -- UNDER 5 PREDICTOR TAB -- */}
+          {/* ---- UNDER 5 PREDICTOR TAB ---- */}
           {activeTab === "under5" && (
             <div>
               {/* Live stats bar */}
@@ -3527,7 +3526,7 @@ export default function DerivOracle() {
                 ))}
               </div>
 
-              {/* Last 30 digits visual - green=under5, red=over4 */}
+              {/* Last 30 digits visual -- green=under5, red=over4 */}
               <div className="u5-panel">
                 <div style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:2, marginBottom:8 }}>
                   LAST 30 DIGITS · GREEN = UNDER 5 · RED = 5 OR ABOVE
