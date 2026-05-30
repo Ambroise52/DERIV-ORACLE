@@ -471,13 +471,22 @@ const css = `
   .two-col{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
   .three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
   .divider{border:none;border-top:1px solid var(--border);margin:10px 0;}
-  /* Tabs */
-  .tabs{display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid var(--border);overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
-  .tab{padding:8px 12px;font-family:var(--head);font-size:11px;letter-spacing:2px;
+  /* Tabs - grouped nav */
+  .tabs-wrapper{margin-bottom:12px;}
+  .tabs-row{display:flex;gap:0;border-bottom:1px solid var(--border);flex-wrap:wrap;}
+  .tab-group{display:flex;gap:1px;padding:0 6px 0 0;margin-right:6px;border-right:1px solid var(--border2);}
+  .tab-group:last-child{border-right:none;margin-right:0;padding-right:0;}
+  .tab-group-badge{font-size:7px;letter-spacing:2px;color:var(--text-dim);padding:2px 4px;
+    font-family:var(--head);opacity:0.45;align-self:center;margin-right:2px;white-space:nowrap;}
+  .tab{padding:7px 10px;font-family:var(--head);font-size:10px;letter-spacing:1.5px;
     text-transform:uppercase;cursor:pointer;border:none;background:transparent;
-    color:var(--text-dim);border-bottom:2px solid transparent;margin-bottom:-1px;transition:all 0.2s;}
+    color:var(--text-dim);border-bottom:2px solid transparent;margin-bottom:-1px;transition:all 0.2s;white-space:nowrap;}
   .tab.active{color:var(--green);border-bottom-color:var(--green);}
   .tab:hover:not(.active){color:var(--text);}
+  .tab-mobile-select{display:none;width:100%;background:var(--bg2);border:1px solid var(--border);
+    color:var(--green);font-family:var(--head);font-size:11px;letter-spacing:1px;
+    padding:9px 12px;border-radius:3px;margin-bottom:10px;cursor:pointer;
+    -webkit-appearance:none;appearance:none;}
   /* Chips */
   .last-digits-row{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px;}
   .ld-chip{width:28px;height:28px;display:flex;align-items:center;justify-content:center;
@@ -580,9 +589,9 @@ const css = `
     background:var(--border);color:var(--text-dim);white-space:nowrap;}
   /* Win rate chart */
   .winrate-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;}
-  .wr-stat{padding:10px;border:1px solid var(--border);border-radius:3px;text-align:center;}
-  .wr-stat-val{font-size:20px;font-weight:700;font-family:var(--head);}
-  .wr-stat-label{font-size:9px;letter-spacing:2px;color:var(--text-dim);margin-top:2px;}
+  .execWR-stat{padding:10px;border:1px solid var(--border);border-radius:3px;text-align:center;}
+  .execWR-stat-val{font-size:20px;font-weight:700;font-family:var(--head);}
+  .execWR-stat-label{font-size:9px;letter-spacing:2px;color:var(--text-dim);margin-top:2px;}
   /* Best strategy badge */
   @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
   @keyframes fadeIn{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
@@ -648,10 +657,9 @@ const css = `
     .symbol-bar{gap:4px;}
   }
   @media(max-width:700px){
-    .tabs{overflow-x:auto;flex-wrap:nowrap;padding-bottom:2px;-webkit-overflow-scrolling:touch;}
-    .tabs::-webkit-scrollbar{height:2px;}
-    .tabs::-webkit-scrollbar-thumb{background:var(--border2);}
-    .tab{white-space:nowrap;font-size:9px;padding:7px 10px;letter-spacing:1px;}
+    .tabs-row{flex-wrap:wrap;}
+    .tab-group{flex-wrap:wrap;border-right:none;padding-right:0;margin-right:0;}
+    .tab{font-size:9px;padding:7px 9px;letter-spacing:1px;}
     .bot-tabs{overflow-x:auto;flex-wrap:nowrap;}
     .bot-tab{white-space:nowrap;font-size:9px;padding:5px 10px;}
     .live-stats{flex-wrap:wrap;gap:8px;padding:8px 10px;}
@@ -665,7 +673,7 @@ const css = `
     .bot-params{grid-template-columns:repeat(2,1fr);}
     .bot-param-val{font-size:12px;}
     .winrate-stats{grid-template-columns:repeat(2,1fr);}
-    .wr-stat-val{font-size:16px;}
+    .execWR-stat-val{font-size:16px;}
     .digit-freq-grid{grid-template-columns:repeat(5,1fr);}
     .signal-box{padding:8px 6px;}
     .signal-val{font-size:22px;}
@@ -679,7 +687,8 @@ const css = `
     .predict-card{padding:10px;}
   }
   @media(max-width:480px){
-    .tabs{gap:1px;}
+    .tab-mobile-select{display:block;}
+    .tabs-row{display:none;}
     .tab{font-size:8px;padding:6px 8px;}
     .live-stat{min-width:100%;flex:auto;}
     .bot-params{grid-template-columns:1fr 1fr;}
@@ -1532,9 +1541,9 @@ export default function DerivOracle() {
           setWinRateHistory(prev => {
             const resolved2 = [...paperTradesRef.current];
             const wins2 = resolved2.filter(t => t.result === "WIN").length;
-            const wr = resolved2.length ? parseFloat(((wins2 / resolved2.length) * 100).toFixed(1)) : 0;
+            const execWR = resolved2.length ? parseFloat(((wins2 / resolved2.length) * 100).toFixed(1)) : 0;
             const totalPnl2 = resolved2.reduce((s, t) => s + t.pnl, 0);
-            return [...prev.slice(-99), { trade: resolved2.length, winRate: wr, pnl: parseFloat(totalPnl2.toFixed(2)) }];
+            return [...prev.slice(-99), { trade: resolved2.length, winRate: execWR, pnl: parseFloat(totalPnl2.toFixed(2)) }];
           });
           pendingTradeRef.current = null;
           setPendingTrade(null);
@@ -1873,6 +1882,15 @@ export default function DerivOracle() {
   const statusClass = { idle: "pill-demo", connecting: "pill-connecting", live: "pill-live", error: "pill-error", demo: "pill-demo" };
   const statusLabel = { idle: "OFFLINE", connecting: "CONNECTING...", live: "● LIVE", error: "ERROR", demo: "DEMO MODE" };
 
+  // Execute tab computed vars (extracted from JSX IIFE -- keep before return)
+  const execColdDigit = hotCold.cold.length > 0 ? hotCold.cold[0] : null;
+  const execHotDigit  = hotCold.hot.length  > 0 ? hotCold.hot[0]  : null;
+  const execWins   = execTradesRef.current.filter(t => t.status === "WIN").length;
+  const execLosses = execTradesRef.current.filter(t => t.status === "LOSS").length;
+  const execTotal  = execWins + execLosses;
+  const execWR     = execTotal > 0 ? ((execWins / execTotal) * 100).toFixed(1) : "--";
+  const execLatClass = latencyMs === null ? "latency-ok" : latencyMs < 80 ? "latency-good" : latencyMs < 200 ? "latency-ok" : "latency-bad";
+
   return (
     <>
       <style>{css}</style>
@@ -1975,7 +1993,7 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* DIGIT FREQUENCY — always visible when data loaded */}
+          {/* DIGIT FREQUENCY -- always visible when data loaded */}
           {digits.length > 0 && (
             <div className="panel" style={{ marginBottom: 12 }}>
               <div className="panel-title"><span className="dot dot-orange" />Last Digit Frequency — {symbol}</div>
@@ -2004,16 +2022,52 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* TABS */}
+          {/* TABS - grouped nav + mobile dropdown */}
           {ticks.length > 0 && (
-            <div className="tabs">
-              {[["overview","Overview"],["evenodd","Even/Odd"],["risefall","Rise/Fall"],["matchdiffer","Matches/Differs"],["overunder","Over/Under"],["signals","⚡ Signals"],["predict","🎯 Predict"],["papertrade","📋 Paper Trade"],["bots","🤖 Bots"],["execute","⚡ Execute"]].map(([id, label]) => (
-                <button key={id} className={`tab ${activeTab === id ? "active" : ""}`} onClick={() => setActiveTab(id)}>{label}</button>
-              ))}
+            <div className="tabs-wrapper">
+              <select className="tab-mobile-select" value={activeTab} onChange={e => setActiveTab(e.target.value)}>
+                <optgroup label="-- ANALYSIS --">
+                  <option value="overview">Overview</option>
+                  <option value="evenodd">Even/Odd</option>
+                  <option value="risefall">Rise/Fall</option>
+                  <option value="matchdiffer">Matches/Differs</option>
+                  <option value="overunder">Over/Under</option>
+                </optgroup>
+                <optgroup label="-- TOOLS --">
+                  <option value="signals">Signals</option>
+                  <option value="predict">Predict</option>
+                  <option value="under5">Under 5</option>
+                </optgroup>
+                <optgroup label="-- TRADE --">
+                  <option value="papertrade">Paper Trade</option>
+                  <option value="bots">Bots</option>
+                  <option value="execute">Execute</option>
+                </optgroup>
+              </select>
+              <div className="tabs-row">
+                <div className="tab-group">
+                  <span className="tab-group-badge">ANALYSIS</span>
+                  {[["overview","Overview"],["evenodd","Even/Odd"],["risefall","Rise/Fall"],["matchdiffer","Matches/Differs"],["overunder","Over/Under"]].map(([id,label]) => (
+                    <button key={id} className={"tab"+(activeTab===id?" active":"")} onClick={()=>setActiveTab(id)}>{label}</button>
+                  ))}
+                </div>
+                <div className="tab-group">
+                  <span className="tab-group-badge">TOOLS</span>
+                  {[["signals","Signals"],["predict","Predict"],["under5","Under 5"]].map(([id,label]) => (
+                    <button key={id} className={"tab"+(activeTab===id?" active":"")} onClick={()=>setActiveTab(id)}>{label}</button>
+                  ))}
+                </div>
+                <div className="tab-group">
+                  <span className="tab-group-badge">TRADE</span>
+                  {[["papertrade","Paper Trade"],["bots","Bots"],["execute","Execute"]].map(([id,label]) => (
+                    <button key={id} className={"tab"+(activeTab===id?" active":"")} onClick={()=>setActiveTab(id)}>{label}</button>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
 
-          {/* ── OVERVIEW TAB ── */}
+          {/* ---- OVERVIEW TAB ---- */}
           {activeTab === "overview" && ticks.length > 0 && (
             <>
               <div className="grid-3">
@@ -2150,7 +2204,7 @@ export default function DerivOracle() {
             </>
           )}
 
-          {/* ── EVEN/ODD TAB ── */}
+          {/* ---- EVEN/ODD TAB ---- */}
           {activeTab === "evenodd" && evenOdd && (
             <div className="grid-2">
               <div className="panel accent-cyan">
@@ -2208,7 +2262,7 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* ── RISE/FALL TAB ── */}
+          {/* ---- RISE/FALL TAB ---- */}
           {activeTab === "risefall" && riseFall && (
             <div className="grid-2">
               <div className="panel accent-orange">
@@ -2252,7 +2306,7 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* ── MATCHES/DIFFERS TAB ── */}
+          {/* ---- MATCHES/DIFFERS TAB ---- */}
           {activeTab === "matchdiffer" && matchesDiffers && (
             <div className="grid-2">
               <div className="panel accent-orange">
@@ -2302,7 +2356,7 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* ── OVER/UNDER TAB ── */}
+          {/* ---- OVER/UNDER TAB ---- */}
           {activeTab === "overunder" && overUnder && (
             <div className="grid-2">
               <div className="panel accent-yellow">
@@ -2355,7 +2409,7 @@ export default function DerivOracle() {
 
 
 
-          {/* ── SIGNALS TAB ── */}
+          {/* ---- SIGNALS TAB ---- */}
           {activeTab === "signals" && (
             <>
               {!allSignals ? (
@@ -2449,21 +2503,21 @@ export default function DerivOracle() {
                     <div className="panel" style={{ marginBottom: 12 }}>
                       <div className="panel-title"><span className="dot dot-cyan" />Win Rate Over Time — Paper Trading Performance</div>
                       <div className="winrate-stats">
-                        <div className="wr-stat">
-                          <div className={`wr-stat-val ${parseFloat(ptStats.winRate) >= 12 ? "green" : parseFloat(ptStats.winRate) >= 10 ? "yellow" : "red"}`}>{ptStats.winRate}%</div>
-                          <div className="wr-stat-label">WIN RATE</div>
+                        <div className="execWR-stat">
+                          <div className={`execWR-stat-val ${parseFloat(ptStats.winRate) >= 12 ? "green" : parseFloat(ptStats.winRate) >= 10 ? "yellow" : "red"}`}>{ptStats.winRate}%</div>
+                          <div className="execWR-stat-label">WIN RATE</div>
                         </div>
-                        <div className="wr-stat">
-                          <div className={`wr-stat-val ${parseFloat(ptStats.totalPnl) >= 0 ? "green" : "red"}`}>{parseFloat(ptStats.totalPnl) >= 0 ? "+" : ""}${ptStats.totalPnl}</div>
-                          <div className="wr-stat-label">TOTAL P&L</div>
+                        <div className="execWR-stat">
+                          <div className={`execWR-stat-val ${parseFloat(ptStats.totalPnl) >= 0 ? "green" : "red"}`}>{parseFloat(ptStats.totalPnl) >= 0 ? "+" : ""}${ptStats.totalPnl}</div>
+                          <div className="execWR-stat-label">TOTAL P&L</div>
                         </div>
-                        <div className="wr-stat">
-                          <div className="wr-stat-val cyan">{ptStats.wins}W / {ptStats.losses}L</div>
-                          <div className="wr-stat-label">WIN / LOSS</div>
+                        <div className="execWR-stat">
+                          <div className="execWR-stat-val cyan">{ptStats.wins}W / {ptStats.losses}L</div>
+                          <div className="execWR-stat-label">WIN / LOSS</div>
                         </div>
-                        <div className="wr-stat">
-                          <div className={`wr-stat-val ${ptStats.targetMet ? "green" : "yellow"}`}>{ptStats.total}/200</div>
-                          <div className="wr-stat-label">TRADES DONE</div>
+                        <div className="execWR-stat">
+                          <div className={`execWR-stat-val ${ptStats.targetMet ? "green" : "yellow"}`}>{ptStats.total}/200</div>
+                          <div className="execWR-stat-label">TRADES DONE</div>
                         </div>
                       </div>
                       <ResponsiveContainer width="100%" height={160}>
@@ -2529,7 +2583,7 @@ export default function DerivOracle() {
             </>
           )}
 
-          {/* ── PREDICT TAB ── */}
+          {/* ---- PREDICT TAB ---- */}
           {activeTab === "predict" && digits.length >= 50 && predictTopPick && (
             <>
                 {/* TOP PICK BANNER */}
@@ -2626,7 +2680,7 @@ export default function DerivOracle() {
             <div className="panel"><div className="empty-state">Need at least 50 ticks for reliable predictions. {digits.length}/50 loaded. Connect live — historical data loads automatically.</div></div>
           )}
 
-          {/* ── PAPER TRADE TAB ── */}
+          {/* ---- PAPER TRADE TAB ---- */}
           {activeTab === "papertrade" && (
             <>
               {/* Summary stats */}
@@ -2815,7 +2869,7 @@ export default function DerivOracle() {
           )}
 
 
-          {/* ── 🤖 BOTS TAB ── */}
+          {/* ----  BOTS TAB ---- */}
           {activeTab === "bots" && (
             <div>
               {/* Sub-tabs */}
@@ -3011,18 +3065,10 @@ export default function DerivOracle() {
           )}
 
 
-          {/* ── ⚡ EXECUTE TAB — PHASE 4 ── */}
-          {activeTab === "execute" && (() => {
-            const coldDigit = hotCold.cold.length > 0 ? hotCold.cold[0] : null;
-            const hotDigit  = hotCold.hot.length  > 0 ? hotCold.hot[0]  : null;
-            const wins  = execTradesRef.current.filter(t => t.status === "WIN").length;
-            const losses = execTradesRef.current.filter(t => t.status === "LOSS").length;
-            const total  = wins + losses;
-            const wr     = total > 0 ? ((wins / total) * 100).toFixed(1) : "—";
-            const latClass = latencyMs === null ? "latency-ok" : latencyMs < 80 ? "latency-good" : latencyMs < 200 ? "latency-ok" : "latency-bad";
-            return (
+          {/* ----  EXECUTE TAB -- PHASE 4 ---- */}
+          {activeTab === "execute" && (
               <div>
-                {/* ── TOKEN SETUP — always visible ── */}
+                {/* ---- TOKEN SETUP -- always visible ---- */}
                 <div style={{ border:"1px solid " + (tokenValid ? "var(--green)" : tokenError ? "var(--red)" : "var(--border)"),
                   borderRadius:4, padding:14, marginBottom:10,
                   background: tokenValid ? "rgba(0,255,136,0.04)" : tokenError ? "rgba(255,50,50,0.06)" : "rgba(0,0,0,0.3)" }}>
@@ -3091,8 +3137,8 @@ export default function DerivOracle() {
                   )}
                 </div>
 
-                {/* ── ACCOUNT SWITCHER ── */}
-                {/* ── ACCOUNT SWITCHER — always visible ── */}
+                {/* ---- ACCOUNT SWITCHER ---- */}
+                {/* ---- ACCOUNT SWITCHER -- always visible ---- */}
                 <div style={{ border:"1px solid var(--border)", borderRadius:4, padding:14, marginBottom:10,
                   background:"rgba(0,0,0,0.3)" }}>
                   <div style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:2, marginBottom:10 }}>
@@ -3160,7 +3206,7 @@ export default function DerivOracle() {
                   )}
                 </div>
 
-                {/* ── WARNING BANNER ── */}
+                {/* ---- WARNING BANNER ---- */}
                 <div style={{ background: activeAccount?.is_virtual ? "rgba(0,255,136,0.04)" : "rgba(255,165,0,0.08)",
                   border:"1px solid " + (activeAccount?.is_virtual ? "var(--green)" : "var(--orange)"),
                   borderRadius:4, padding:"8px 14px", marginBottom:10, fontSize:10,
@@ -3170,33 +3216,33 @@ export default function DerivOracle() {
                     : "⚠ REAL ACCOUNT — DIFFERS on " + symbol + " · Start with $0.35 minimum stake · " + (activeAccount?.loginid || "")}
                 </div>
 
-                {/* ── LIVE SIGNAL DISPLAY ── */}
+                {/* ---- LIVE SIGNAL DISPLAY ---- */}
                 <div className="execute-grid" style={{ marginBottom:10 }}>
                   <div className={"signal-live" + (coldDigit !== null ? " hot" : "")}>
                     <div className="signal-live-label">⚡ DIFFERS TARGET · COLDEST DIGIT</div>
                     <div className="signal-live-val" style={{ color:"var(--green)" }}>
-                      {coldDigit !== null ? coldDigit : "—"}
+                      {execColdDigit !== null ? execColdDigit : "—"}
                     </div>
                     <div style={{ fontSize:9, color:"var(--text-dim)" }}>
-                      {coldDigit !== null ? "Least frequent — best DIFFERS prediction" : "Need 20+ ticks"}
+                      {execColdDigit !== null ? "Least frequent — best DIFFERS prediction" : "Need 20+ ticks"}
                     </div>
                   </div>
                   <div className="signal-live">
                     <div className="signal-live-label">🔥 HOT DIGIT · MOST FREQUENT</div>
                     <div className="signal-live-val" style={{ color:"var(--orange)" }}>
-                      {hotDigit !== null ? hotDigit : "—"}
+                      {execHotDigit !== null ? execHotDigit : "—"}
                     </div>
                     <div style={{ fontSize:9, color:"var(--text-dim)" }}>Appearing most — avoid as DIFFERS target</div>
                   </div>
                 </div>
 
-                {/* ── SESSION STATS ── */}
+                {/* ---- SESSION STATS ---- */}
                 <div className="exec-stat-row">
                   {[
                     [total || "0", "TRADES", "var(--cyan)"],
                     [wins, "WINS", "var(--green)"],
                     [losses, "LOSSES", "var(--red)"],
-                    [wr === "—" ? "—" : wr + "%", "WIN RATE", wr !== "—" && parseFloat(wr) >= 47.4 ? "var(--green)" : "var(--yellow)"],
+                    [execWR === "—" ? "—" : execWR + "%", "WIN RATE", execWR !== "—" && parseFloat(execWR) >= 47.4 ? "var(--green)" : "var(--yellow)"],
                   ].map(([val,label,color]) => (
                     <div key={label} className="exec-stat">
                       <div className="exec-stat-val" style={{ color }}>{val}</div>
@@ -3218,7 +3264,7 @@ export default function DerivOracle() {
                   ))}
                 </div>
 
-                {/* ── CONTROLS ── */}
+                {/* ---- CONTROLS ---- */}
                 <div className="panel" style={{ marginBottom:10 }}>
                   <div className="panel-title"><span className="dot dot-orange"/>Trade Controls</div>
 
@@ -3290,7 +3336,7 @@ export default function DerivOracle() {
                   )}
                 </div>
 
-                {/* ── TRADE LOG ── */}
+                {/* ---- TRADE LOG ---- */}
                 <div className="panel">
                   <div className="panel-title" style={{ justifyContent:"space-between" }}>
                     <span><span className="dot dot-green"/>Live Trade Log ({execTradesRef.current.length})</span>
@@ -3326,8 +3372,7 @@ export default function DerivOracle() {
                   )}
                 </div>
               </div>
-            );
-          })()}
+          )}
 
           {/* PHASE 2 TEASER */}
           <div className="phase2-banner">
@@ -3338,7 +3383,7 @@ export default function DerivOracle() {
         </div>
       </div>
 
-      {/* ── CONFIRM ARM OVERLAY ── */}
+      {/* ---- CONFIRM ARM OVERLAY ---- */}
       {showConfirm && (
         <div className="confirm-overlay" onClick={() => setShowConfirm(false)}>
           <div className="confirm-box" onClick={e => e.stopPropagation()}>
