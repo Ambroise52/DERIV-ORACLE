@@ -656,7 +656,43 @@ const css = `
     .grid-top,.grid-2,.grid-3{grid-template-columns:1fr;}
     .symbol-bar{gap:4px;}
   }
+  /* Under 5 Predictor Tab */
+  .u5-stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px;}
+  .u5-stat{text-align:center;padding:8px;border:1px solid var(--border);border-radius:3px;background:var(--bg2);}
+  .u5-stat-val{font-size:18px;font-weight:700;font-family:var(--head);}
+  .u5-stat-label{font-size:8px;letter-spacing:2px;color:var(--text-dim);margin-top:2px;}
+  .u5-panel{border:1px solid var(--border);border-radius:4px;padding:14px;margin-bottom:10px;background:var(--bg2);}
+  .u5-signal-box{text-align:center;padding:20px 14px;border-radius:4px;margin-bottom:10px;border:1px solid var(--border);}
+  .u5-signal-box.enter{border-color:var(--green);background:rgba(0,255,136,0.06);}
+  .u5-signal-box.wait{border-color:var(--red);background:rgba(255,50,50,0.06);}
+  .u5-signal-box.caution{border-color:var(--yellow);background:rgba(255,220,0,0.04);}
+  .u5-verdict{font-size:22px;font-weight:900;font-family:var(--head);letter-spacing:4px;margin-bottom:6px;}
+  .u5-digit-big{font-size:64px;font-weight:900;font-family:var(--head);line-height:1;color:var(--cyan);}
+  .u5-digit-label{font-size:9px;letter-spacing:3px;color:var(--text-dim);margin-top:4px;}
+  .u5-factors{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:10px;}
+  .u5-factor{padding:8px 10px;border-radius:3px;border:1px solid var(--border);background:var(--bg2);}
+  .u5-factor-label{font-size:8px;letter-spacing:2px;color:var(--text-dim);margin-bottom:3px;}
+  .u5-factor-val{font-size:13px;font-weight:700;font-family:var(--head);}
+  .u5-factor.bullish{border-color:var(--green);}
+  .u5-factor.bearish{border-color:var(--red);}
+  .u5-factor.neutral{border-color:var(--border);}
+  .u5-history{display:flex;gap:3px;flex-wrap:wrap;margin-bottom:10px;}
+  .u5-digit-pill{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;
+    justify-content:center;font-size:11px;font-weight:700;font-family:var(--head);}
+  .u5-digit-pill.under{background:rgba(0,255,136,0.15);border:1px solid var(--green);color:var(--green);}
+  .u5-digit-pill.over{background:rgba(255,50,50,0.10);border:1px solid var(--red);color:var(--red);}
+  .u5-predict-btn{width:100%;padding:14px;font-family:var(--head);font-size:13px;
+    letter-spacing:3px;text-transform:uppercase;background:transparent;
+    border:1px solid var(--cyan);color:var(--cyan);border-radius:3px;cursor:pointer;
+    transition:all 0.2s;margin-bottom:10px;}
+  .u5-predict-btn:hover{background:rgba(0,191,255,0.12);box-shadow:0 0 20px rgba(0,191,255,0.2);}
+  .u5-predict-btn:disabled{opacity:0.4;cursor:not-allowed;}
+  .u5-predict-btn.analysing{border-color:var(--yellow);color:var(--yellow);}
+  .u5-analysis-log{background:#03030a;border:1px solid var(--border);border-radius:3px;
+    padding:10px;font-family:var(--mono);font-size:9px;color:var(--text-dim);
+    max-height:160px;overflow-y:auto;line-height:1.8;white-space:pre-wrap;}
   @media(max-width:700px){
+
     .tabs-row{flex-wrap:wrap;}
     .tab-group{flex-wrap:wrap;border-right:none;padding-right:0;margin-right:0;}
     .tab{font-size:9px;padding:7px 9px;letter-spacing:1px;}
@@ -1091,6 +1127,8 @@ export default function DerivOracle() {
   const [execStake, setExecStake] = useState("10");
   const [execMode, setExecMode] = useState("demo"); // "demo" | "real"
   const [execTrades, setExecTrades] = useState([]);
+  const [u5Predicting, setU5Predicting] = useState(false);
+  const [u5Result, setU5Result] = useState(null);
   const [execFiring, setExecFiring] = useState(false);
   const [execLog, setExecLog] = useState("");
   const [latencyMs, setLatencyMs] = useState(null);
@@ -1441,7 +1479,89 @@ export default function DerivOracle() {
     }
   }, [execStake]);
 
+  // Under 5 Predictor Engine - 7-factor analysis
+  const runUnder5Analysis = async () => {
+    if (digits.length < 30) {
+      setU5Result({ verdict:"WAIT", confidence:0, recommendedDigit:null, signal:"red",
+        factors:[], analysisLog:"Need at least 30 live ticks.\nCurrently have " + digits.length + " ticks." });
+      return;
+    }
+    setU5Predicting(true);
+    setU5Result(null);
+    const last50 = digits.slice(-50);
+    const under5Count = last50.filter(d => d < 5).length;
+    const under5Rate = (under5Count / last50.length) * 100;
+    const f1Score = under5Rate >= 55 ? 2 : under5Rate >= 50 ? 1 : under5Rate >= 45 ? 0 : -1;
+    const f1Note = "Under-5 rate (last 50): " + under5Rate.toFixed(1) + "% " + (f1Score >= 1 ? "BULLISH" : f1Score === 0 ? "NEUTRAL" : "BEARISH");
+    const last2Under = digits.slice(-2).every(d => d < 5);
+    const f2Score = last2Under ? 2 : 0;
+    const f2Note = "Last 2 ticks: " + digits.slice(-2).join(", ") + " -> " + (last2Under ? "BOTH UNDER 5 (bot signal)" : "NOT both under 5");
+    const prev5Under = digits.slice(-10,-5).filter(d => d < 5).length;
+    const last5Under = digits.slice(-5).filter(d => d < 5).length;
+    const momentumDiff = last5Under - prev5Under;
+    const f3Score = momentumDiff > 0 ? 2 : momentumDiff === 0 ? 1 : 0;
+    const f3Note = "Momentum: prev5=" + prev5Under + "/5 -> last5=" + last5Under + "/5 " + (f3Score === 2 ? "GAINING" : f3Score === 1 ? "FLAT" : "LOSING");
+    let streak = 0; let streakType = null;
+    for (let i = digits.length - 1; i >= 0; i--) {
+      const isUnder = digits[i] < 5;
+      if (streakType === null) { streakType = isUnder ? "UNDER" : "OVER"; streak = 1; }
+      else if ((isUnder && streakType === "UNDER") || (!isUnder && streakType === "OVER")) streak++;
+      else break;
+    }
+    const f4Score = (streakType === "UNDER" && streak <= 3) ? 2 : (streakType === "UNDER" && streak <= 5) ? 1 : (streakType === "OVER" && streak >= 3) ? 2 : 0;
+    const f4Note = "Streak: " + streak + "x " + streakType + " " + (f4Score === 2 ? "FAVORABLE" : f4Score === 1 ? "OK" : "RISKY");
+    const freq = [0,1,2,3,4].map(d => ({ digit:d, count: last50.filter(x => x === d).length })).sort((a,b) => a.count - b.count);
+    const coldestUnder5 = freq[0];
+    const f5Score = coldestUnder5.count < 4 ? 2 : coldestUnder5.count < 6 ? 1 : 0;
+    const f5Note = "Coldest under-5: digit " + coldestUnder5.digit + " (" + coldestUnder5.count + "/50) " + (f5Score >= 1 ? "COLD (due)" : "WARM");
+    let gapSinceLast = 0;
+    for (let i = digits.length - 1; i >= 0; i--) { if (digits[i] < 5) break; gapSinceLast++; }
+    const f6Score = gapSinceLast >= 3 ? 2 : gapSinceLast >= 1 ? 1 : 0;
+    const f6Note = "Gap since last under-5: " + gapSinceLast + " ticks " + (f6Score === 2 ? "OVERDUE" : f6Score === 1 ? "RECENT" : "JUST HAPPENED");
+    const last10 = digits.slice(-10);
+    const last10Under = last10.filter(d => d < 5).length;
+    const f7Score = last10Under >= 6 ? 2 : last10Under >= 4 ? 1 : last10Under >= 2 ? 0 : -1;
+    const f7Note = "Last 10 digits: " + last10Under + "/10 under 5";
+    const scores = [f1Score, f2Score, f3Score, f4Score, f5Score, f6Score, f7Score];
+    const totalScore = scores.reduce((a,b) => a+b, 0);
+    const maxScore = 14;
+    const rawConf = Math.round(((totalScore + maxScore/2) / (maxScore * 1.5)) * 100);
+    const confidence = Math.min(Math.max(rawConf, 5), 94);
+    const verdict = confidence >= 65 ? "ENTER" : confidence >= 50 ? "CAUTION" : "WAIT";
+    const signal = confidence >= 65 ? "green" : confidence >= 50 ? "yellow" : "red";
+    const recommendedDigit = confidence >= 55 ? coldestUnder5.digit : null;
+    const analysisLog = [
+      "=== ROMANS 8:28 ORACLE -- UNDER 5 ANALYSIS ===",
+      "Ticks: " + digits.length + " | Symbol: " + symbol + " | " + new Date().toLocaleTimeString(),
+      "",
+      "F1 Base rate:  " + f1Note,
+      "F2 Bot signal: " + f2Note,
+      "F3 Momentum:   " + f3Note,
+      "F4 Streak:     " + f4Note,
+      "F5 Cold digit: " + f5Note,
+      "F6 Gap:        " + f6Note,
+      "F7 Recent:     " + f7Note,
+      "",
+      "SCORE: " + totalScore + "/" + (maxScore/2) + " -> Confidence: " + confidence + "%",
+      "VERDICT: " + verdict + (recommendedDigit !== null ? " -> Set prediction = " + recommendedDigit : ""),
+    ].join("\n");
+    const factors = [
+      { label:"UNDER-5 RATE", value: under5Rate.toFixed(1) + "%", score: f1Score },
+      { label:"BOT SIGNAL (2x U5)", value: last2Under ? "YES" : "NO", score: f2Score },
+      { label:"MOMENTUM", value: momentumDiff > 0 ? "GAINING" : momentumDiff === 0 ? "FLAT" : "LOSING", score: f3Score },
+      { label:"STREAK", value: streak + "x " + streakType, score: f4Score },
+      { label:"COLDEST U5 DIGIT", value: "Digit " + coldestUnder5.digit + " (" + coldestUnder5.count + "/50)", score: f5Score },
+      { label:"GAP SINCE U5", value: gapSinceLast + " ticks", score: f6Score },
+      { label:"LAST 10 RATE", value: last10Under + "/10", score: f7Score },
+      { label:"CONFIDENCE", value: confidence + "%", score: confidence >= 65 ? 2 : confidence >= 50 ? 1 : -1 },
+    ];
+    await new Promise(r => setTimeout(r, 600));
+    setU5Result({ verdict, confidence, recommendedDigit, signal, factors, analysisLog });
+    setU5Predicting(false);
+  };
+
   const connectWS = useCallback((sym) => {
+
     // Close existing connection cleanly
     if (wsRef.current) {
       wsRef.current.onclose = null; // prevent stale close handler firing
@@ -1882,7 +2002,22 @@ export default function DerivOracle() {
   const statusClass = { idle: "pill-demo", connecting: "pill-connecting", live: "pill-live", error: "pill-error", demo: "pill-demo" };
   const statusLabel = { idle: "OFFLINE", connecting: "CONNECTING...", live: "● LIVE", error: "ERROR", demo: "DEMO MODE" };
 
-  // Execute tab computed vars (extracted from JSX IIFE -- keep before return)
+  // Under 5 tab live computed vars
+  const u5Last30 = digits.slice(-30);
+  const u5Rate30 = u5Last30.length > 0 ? Math.round((u5Last30.filter(d => d < 5).length / u5Last30.length) * 100) : 0;
+  const u5Last10 = digits.slice(-10);
+  const u5Rate10 = u5Last10.length > 0 ? Math.round((u5Last10.filter(d => d < 5).length / u5Last10.length) * 100) : 0;
+  let u5CurrentStreak = 0; let u5StreakType = "--";
+  for (let _u5i = digits.length - 1; _u5i >= 0; _u5i--) {
+    const _isU5 = digits[_u5i] < 5;
+    if (u5StreakType === "--") { u5StreakType = _isU5 ? "UNDER" : "OVER"; u5CurrentStreak = 1; }
+    else if ((_isU5 && u5StreakType === "UNDER") || (!_isU5 && u5StreakType === "OVER")) u5CurrentStreak++;
+    else break;
+  }
+  let u5GapSinceLast = 0;
+  for (let _u5j = digits.length - 1; _u5j >= 0; _u5j--) { if (digits[_u5j] < 5) break; u5GapSinceLast++; }
+
+    // Execute tab computed vars (extracted from JSX IIFE -- keep before return)
   const execColdDigit = hotCold.cold.length > 0 ? hotCold.cold[0] : null;
   const execHotDigit  = hotCold.hot.length  > 0 ? hotCold.hot[0]  : null;
   const execWins   = execTradesRef.current.filter(t => t.status === "WIN").length;
@@ -3372,6 +3507,123 @@ export default function DerivOracle() {
                   )}
                 </div>
               </div>
+          )}
+
+          {activeTab === "under5" && (
+            <div>
+              <div className="u5-stats-grid">
+                {[
+                  [u5Rate30 + "%", "U5 RATE (30T)", u5Rate30 >= 55 ? "var(--green)" : u5Rate30 >= 45 ? "var(--yellow)" : "var(--red)"],
+                  [u5Rate10 + "%", "U5 RATE (10T)", u5Rate10 >= 60 ? "var(--green)" : u5Rate10 >= 40 ? "var(--yellow)" : "var(--red)"],
+                  [u5CurrentStreak + "x " + u5StreakType, "STREAK", u5StreakType === "UNDER" ? "var(--green)" : "var(--red)"],
+                  [u5GapSinceLast + " ticks", "GAP SINCE U5", u5GapSinceLast >= 3 ? "var(--green)" : u5GapSinceLast >= 1 ? "var(--yellow)" : "var(--text-dim)"],
+                ].map(([val, label, color]) => (
+                  <div key={label} className="u5-stat">
+                    <div className="u5-stat-val" style={{ color }}>{val}</div>
+                    <div className="u5-stat-label">{label}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="u5-panel">
+                <div style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:2, marginBottom:8 }}>
+                  LAST 30 DIGITS - GREEN = UNDER 5 - RED = 5 OR ABOVE
+                </div>
+                <div className="u5-history">
+                  {digits.slice(-30).map((d, i) => (
+                    <div key={i} className={"u5-digit-pill " + (d < 5 ? "under" : "over")}>{d}</div>
+                  ))}
+                  {digits.length < 30 && (
+                    <div style={{ fontSize:10, color:"var(--text-dim)", padding:"4px 8px" }}>
+                      {30 - digits.length} more ticks needed...
+                    </div>
+                  )}
+                </div>
+                <div style={{ fontSize:9, color:"var(--text-dim)", marginTop:6 }}>
+                  Under 5: {u5Last30.filter(d => d < 5).length}/30 ({u5Rate30}%) - Over 4: {u5Last30.filter(d => d >= 5).length}/30
+                </div>
+              </div>
+
+              <button
+                className={"u5-predict-btn" + (u5Predicting ? " analysing" : "")}
+                onClick={runUnder5Analysis}
+                disabled={u5Predicting || digits.length < 30}
+              >
+                {u5Predicting
+                  ? "Analysing " + digits.length + " ticks..."
+                  : digits.length < 30
+                  ? "Need " + (30 - digits.length) + " more ticks to predict"
+                  : "PREDICT NEXT UNDER 5 DIGIT"}
+              </button>
+
+              {u5Result && (
+                <div style={{ marginTop:10 }}>
+                  <div className={"u5-signal-box " + (u5Result.signal === "green" ? "enter" : u5Result.signal === "yellow" ? "caution" : "wait")}>
+                    <div className="u5-verdict" style={{ color: u5Result.signal === "green" ? "var(--green)" : u5Result.signal === "yellow" ? "var(--yellow)" : "var(--red)" }}>
+                      {u5Result.verdict === "ENTER" ? "ENTER TRADE" : u5Result.verdict === "CAUTION" ? "CAUTION" : "WAIT"}
+                    </div>
+                    <div style={{ fontSize:11, color:"var(--text-dim)", marginBottom:10 }}>
+                      Confidence: {u5Result.confidence}% - DIGITUNDER on {symbol}
+                    </div>
+                    {u5Result.recommendedDigit !== null ? (
+                      <div>
+                        <div className="u5-digit-big">{u5Result.recommendedDigit}</div>
+                        <div className="u5-digit-label">SET THIS AS PREDICTION IN YOUR BOT</div>
+                        <div style={{ fontSize:9, color:"var(--text-dim)", marginTop:8 }}>
+                          Digit {u5Result.recommendedDigit} is coldest under-5 - least appeared, most likely due
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize:11, color:"var(--text-dim)", marginTop:8 }}>
+                        {u5Result.verdict === "WAIT"
+                          ? "Conditions not aligned. Wait for momentum + gap signal."
+                          : "Borderline -- watch for gap 3+ before entering."}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="u5-factors">
+                    {u5Result.factors.map((f, fi) => (
+                      <div key={fi} className={"u5-factor " + (f.score >= 2 ? "bullish" : f.score <= 0 ? "bearish" : "neutral")}>
+                        <div className="u5-factor-label">{f.label}</div>
+                        <div className="u5-factor-val" style={{ color: f.score >= 2 ? "var(--green)" : f.score <= 0 ? "var(--red)" : "var(--yellow)" }}>
+                          {f.value}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="u5-panel">
+                    <div style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:2, marginBottom:6 }}>ANALYSIS LOG</div>
+                    <div className="u5-analysis-log">{u5Result.analysisLog}</div>
+                  </div>
+
+                  {u5Result.verdict === "ENTER" && u5Result.recommendedDigit !== null && (
+                    <div style={{ background:"rgba(0,255,136,0.06)", border:"1px solid var(--green)",
+                      borderRadius:4, padding:"12px 14px", fontSize:10, lineHeight:1.7 }}>
+                      <div style={{ color:"var(--green)", fontFamily:"var(--head)", letterSpacing:2, marginBottom:6 }}>
+                        BOT INSTRUCTIONS
+                      </div>
+                      <div style={{ color:"var(--text)" }}>
+                        1. Open your ROMANS 8:28 Oracle Under 5 bot on Deriv<br/>
+                        2. Set Prediction = <strong style={{ color:"var(--cyan)" }}>{u5Result.recommendedDigit}</strong> in the bot<br/>
+                        3. Verify symbol = <strong style={{ color:"var(--cyan)" }}>{symbol}</strong><br/>
+                        4. Click Run -- bot will execute DIGITUNDER trades<br/>
+                        5. Stop when Take Profit or Stop Loss is reached
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!u5Result && (
+                <div style={{ fontSize:9, color:"var(--text-dim)", padding:"12px 0", lineHeight:1.8, textAlign:"center" }}>
+                  Analyses 7 factors: under-5 base rate, bot entry signal (2 consecutive under-5),<br/>
+                  momentum, streak status, coldest digit, gap analysis, recent rate<br/>
+                  Returns confidence score, ENTER/WAIT verdict, and digit to set in your bot
+                </div>
+              )}
+            </div>
           )}
 
           {/* PHASE 2 TEASER */}
