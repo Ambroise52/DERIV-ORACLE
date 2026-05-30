@@ -1,5 +1,4 @@
 /* eslint-disable */
-/* BUILD:1780005841 */
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -15,7 +14,7 @@ const OR_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OR_MODEL = "deepseek/deepseek-r1:free";
 
 // ── DERIV CONFIG ──────────────────────────────────────────────────────────────
-const DERIV_APP_ID = process.env.REACT_APP_DERIV_APP_ID || "1089"; // 1089 = Deriv public app_id, fully supports authorize+trade for personal use
+const DERIV_APP_ID = process.env.REACT_APP_DERIV_APP_ID || "1089";
 // Token loaded from env — never hardcode a live PAT here
 const DERIV_TOKEN_DEFAULT = process.env.REACT_APP_DERIV_TOKEN || "";
 const DERIV_WS_URL = `wss://ws.derivws.com/websockets/v3?app_id=${DERIV_APP_ID}`;
@@ -472,24 +471,13 @@ const css = `
   .two-col{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
   .three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
   .divider{border:none;border-top:1px solid var(--border);margin:10px 0;}
-  /* Tabs - grouped nav */
-  .tabs-wrapper{margin-bottom:12px;}
-  .tabs-row{display:flex;gap:0;border-bottom:1px solid var(--border);flex-wrap:wrap;}
-  .tab-group{display:flex;gap:1px;padding:0 6px 0 0;margin-right:6px;border-right:1px solid var(--border2);}
-  .tab-group:last-child{border-right:none;margin-right:0;padding-right:0;}
-  .tab-group-badge{font-size:7px;letter-spacing:2px;color:var(--text-dim);padding:2px 4px;
-    font-family:var(--head);opacity:0.45;align-self:center;margin-right:2px;white-space:nowrap;}
-  .tab{padding:7px 10px;font-family:var(--head);font-size:10px;letter-spacing:1.5px;
+  /* Tabs */
+  .tabs{display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid var(--border);overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
+  .tab{padding:8px 12px;font-family:var(--head);font-size:11px;letter-spacing:2px;
     text-transform:uppercase;cursor:pointer;border:none;background:transparent;
-    color:var(--text-dim);border-bottom:2px solid transparent;margin-bottom:-1px;transition:all 0.2s;white-space:nowrap;}
+    color:var(--text-dim);border-bottom:2px solid transparent;margin-bottom:-1px;transition:all 0.2s;}
   .tab.active{color:var(--green);border-bottom-color:var(--green);}
   .tab:hover:not(.active){color:var(--text);}
-  .tab-mobile-select{display:none;width:100%;background:var(--bg2);border:1px solid var(--border);
-    color:var(--green);font-family:var(--head);font-size:11px;letter-spacing:1px;
-    padding:9px 12px;border-radius:3px;margin-bottom:10px;cursor:pointer;
-    -webkit-appearance:none;appearance:none;
-    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2300ff88' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
-    background-repeat:no-repeat;background-position:right 12px center;}
   /* Chips */
   .last-digits-row{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px;}
   .ld-chip{width:28px;height:28px;display:flex;align-items:center;justify-content:center;
@@ -654,66 +642,16 @@ const css = `
   .confirm-box{background:#0a0a14;border:1px solid var(--orange);border-radius:6px;
     padding:28px;max-width:380px;width:90%;text-align:center;}
 
-
-  /* ── UNDER 5 PREDICTOR (Phase 4B) ──────────────────────────────────── */
-  .u5-panel{border:1px solid var(--border);border-radius:4px;padding:14px;
-    background:rgba(0,0,0,0.3);margin-bottom:10px;}
-  .u5-panel.signal-green{border-color:var(--green);background:rgba(0,255,136,0.04);}
-  .u5-panel.signal-red{border-color:var(--red);background:rgba(255,50,50,0.04);}
-  .u5-panel.signal-yellow{border-color:var(--yellow);background:rgba(255,220,0,0.04);}
-  .u5-signal-box{text-align:center;padding:20px 14px;border-radius:4px;margin-bottom:10px;
-    border:2px solid var(--border);}
-  .u5-signal-box.enter{border-color:var(--green);background:rgba(0,255,136,0.06);}
-  .u5-signal-box.wait{border-color:var(--red);background:rgba(255,50,50,0.06);}
-  .u5-signal-box.caution{border-color:var(--yellow);background:rgba(255,220,0,0.06);}
-  .u5-verdict{font-size:22px;font-weight:900;font-family:var(--head);letter-spacing:4px;margin-bottom:6px;}
-  .u5-digit-big{font-size:64px;font-weight:900;font-family:var(--head);line-height:1;
-    color:var(--green);text-shadow:0 0 30px rgba(0,255,136,0.5);}
-  .u5-digit-label{font-size:9px;letter-spacing:3px;color:var(--text-dim);margin-top:4px;}
-  .u5-factors{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:10px;}
-  .u5-factor{padding:8px 10px;border-radius:3px;border:1px solid var(--border);
-    background:rgba(0,0,0,0.2);}
-  .u5-factor-label{font-size:8px;letter-spacing:2px;color:var(--text-dim);margin-bottom:3px;}
-  .u5-factor-val{font-size:13px;font-weight:700;font-family:var(--head);}
-  .u5-factor.bullish{border-color:var(--green);}
-  .u5-factor.bearish{border-color:var(--red);}
-  .u5-factor.neutral{border-color:var(--border);}
-  .u5-history{display:flex;gap:3px;flex-wrap:wrap;margin-bottom:10px;}
-  .u5-digit-pill{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;
-    justify-content:center;font-size:10px;font-weight:700;font-family:var(--head);flex-shrink:0;}
-  .u5-digit-pill.under{background:rgba(0,255,136,0.15);border:1px solid var(--green);color:var(--green);}
-  .u5-digit-pill.over{background:rgba(255,50,50,0.10);border:1px solid var(--red);color:var(--red);}
-  .u5-predict-btn{width:100%;padding:14px;font-family:var(--head);font-size:13px;
-    letter-spacing:3px;border:2px solid var(--cyan);background:rgba(0,191,255,0.06);
-    color:var(--cyan);cursor:pointer;border-radius:4px;transition:all 0.3s;}
-  .u5-predict-btn:hover{background:rgba(0,191,255,0.12);box-shadow:0 0 20px rgba(0,191,255,0.2);}
-  .u5-predict-btn:disabled{opacity:0.4;cursor:not-allowed;}
-  .u5-predict-btn.analysing{border-color:var(--yellow);color:var(--yellow);
-    background:rgba(255,220,0,0.06);animation:pulse-border 0.8s infinite;}
-  .u5-stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px;}
-  .u5-stat{text-align:center;padding:8px;border:1px solid var(--border);
-    border-radius:3px;background:rgba(0,0,0,0.2);}
-  .u5-stat-val{font-size:18px;font-weight:700;font-family:var(--head);}
-  .u5-stat-label{font-size:8px;letter-spacing:2px;color:var(--text-dim);margin-top:2px;}
-  .u5-analysis-log{background:#03030a;border:1px solid var(--border);border-radius:3px;
-    padding:10px;font-family:var(--mono);font-size:9px;color:var(--text-dim);
-    max-height:160px;overflow-y:auto;line-height:1.8;white-space:pre-wrap;}
-  @media(max-width:700px){
-    .u5-factors{grid-template-columns:1fr 1fr;}
-    .u5-stats-grid{grid-template-columns:repeat(2,1fr);}
-    .u5-digit-big{font-size:48px;}
-  }
-
     /* ── MOBILE RESPONSIVE ─────────────────────────────── */
   @media(max-width:900px){
     .grid-top,.grid-2,.grid-3{grid-template-columns:1fr;}
     .symbol-bar{gap:4px;}
   }
   @media(max-width:700px){
-    .tabs-row{flex-wrap:wrap;}
-    .tab-group{flex-wrap:wrap;border-right:none;padding-right:0;margin-right:0;}
-    .tab{font-size:9px;padding:7px 9px;letter-spacing:1px;}
-    .bot-tabs{overflow-x:auto;flex-wrap:nowrap;}
+    .tabs{overflow-x:auto;flex-wrap:nowrap;padding-bottom:2px;-webkit-overflow-scrolling:touch;}
+    .tabs::-webkit-scrollbar{height:2px;}
+    .tabs::-webkit-scrollbar-thumb{background:var(--border2);}
+    .tab{white-space:nowrap;font-size:9px;padding:7px 10px;letter-spacing:1px;}
     .bot-tabs{overflow-x:auto;flex-wrap:nowrap;}
     .bot-tab{white-space:nowrap;font-size:9px;padding:5px 10px;}
     .live-stats{flex-wrap:wrap;gap:8px;padding:8px 10px;}
@@ -741,8 +679,8 @@ const css = `
     .predict-card{padding:10px;}
   }
   @media(max-width:480px){
-    .tab-mobile-select{display:block;}
-    .tabs-row{display:none;}
+    .tabs{gap:1px;}
+    .tab{font-size:8px;padding:6px 8px;}
     .live-stat{min-width:100%;flex:auto;}
     .bot-params{grid-template-columns:1fr 1fr;}
     .digit-freq-grid{grid-template-columns:repeat(5,1fr);}
@@ -1129,21 +1067,12 @@ export default function DerivOracle() {
 
   // ── AUTH + ACCOUNT STATE ──────────────────────────────────────────────────
   const [derivToken, setDerivToken] = useState(DERIV_TOKEN_DEFAULT);
-  const tokenRef = useRef(DERIV_TOKEN_DEFAULT);  // always-current ref, safe in closures
   const [tokenInput, setTokenInput] = useState("");
-  const [tokenValid, setTokenValid] = useState(false);
+  const [tokenValid, setTokenValid] = useState(false);  // true only after successful auth
   const [tokenError, setTokenError] = useState("");
   const [accountList, setAccountList] = useState([]);
   const [activeAccount, setActiveAccount] = useState(null);
-  const activeAccountRef = useRef(null);         // always-current ref for closures
-  const [showTokenSetup, setShowTokenSetup] = useState(true);
-
-
-  // ── UNDER 5 PREDICTOR STATE ──────────────────────────────────────────────
-  const [u5Predicting, setU5Predicting] = useState(false);
-  const [u5Result, setU5Result] = useState(null);
-  // u5Result: { verdict:"ENTER"|"WAIT"|"CAUTION", confidence:0-100,
-  //   recommendedDigit:0-4|null, factors:[], analysisLog:"", signal:"green"|"red"|"yellow" }
+  const [showTokenSetup, setShowTokenSetup] = useState(true); // always show token panel
 
   // ── PHASE 4: EXECUTE STATE ───────────────────────────────────────────────
   const tradeWsRef = useRef(null);          // dedicated trade WebSocket
@@ -1161,7 +1090,6 @@ export default function DerivOracle() {
   const [execSessionPnl, setExecSessionPnl] = useState(0);
   const execTradesRef = useRef([]);
   const lastExecTickRef = useRef(0);        // prevent double-firing on same tick
-  const [tradeWsStatus, setTradeWsStatus] = useState("disconnected"); // disconnected|connecting|open|error
 
   // ── BOT ANALYZER STATE (Phase 3) ─────────────────────────────────────────
   const [botSubTab, setBotSubTab] = useState("upload");
@@ -1234,68 +1162,57 @@ export default function DerivOracle() {
   // Latency target: < 100ms proposal→buy round trip
   // ══════════════════════════════════════════════════════════════════════════
 
-  // execMode ref keeps execMode always-current inside WS closures
-  const execModeRef = useRef("demo");
-  useEffect(() => { execModeRef.current = execMode; }, [execMode]);
+  const connectTradeWS = useCallback(() => {
+    if (tradeWsRef.current && tradeWsRef.current.readyState <= 1) return;
+    const ws = new WebSocket(DERIV_WS_URL);
+    ws.binaryType = "arraybuffer"; // fastest parse mode
+    tradeWsRef.current = ws;
 
-  // accountTokenMapRef — populated from authorize response (account_list in response
-  // does NOT reliably carry tokens in all Deriv API versions; authorize does)
-  const accountTokenMapRef = useRef({});
+    ws.onopen = () => {
+      setExecLog("Trade WS open — authorizing...");
+      const authToken = activeAccount?.token || derivToken || DERIV_TOKEN_DEFAULT;
+      if (!authToken) { setExecLog("⚠ No token set. Enter your Deriv API token below."); ws.close(); return; }
+      ws.send(JSON.stringify({ authorize: authToken, req_id: 1 }));
+    };
 
-  // ── UNIFIED TRADE WS MESSAGE HANDLER ────────────────────────────────────────
-  // Attached once per WS instance. Account switches reuse same handler so there
-  // is never a ghost handler left open from the previous connection.
-  const attachTradeWsHandlers = useCallback((ws) => {
     ws.onmessage = (e) => {
-      let msg;
-      try { msg = JSON.parse(typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data)); }
-      catch { return; }
+      const msg = JSON.parse(
+        typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data)
+      );
 
       if (msg.msg_type === "authorize") {
         if (msg.error) {
           setTokenValid(false);
-          setTradeWsStatus("error");
           setTokenError(msg.error.message);
-          setExecLog("Auth failed: " + msg.error.message + " -- ensure token has Read + Trade scope.");
+          setExecLog("✗ Auth failed: " + msg.error.message + " — paste a fresh token below.");
           return;
         }
-        // Deriv returns per-account tokens inside authorize.account_list
-        if (Array.isArray(msg.authorize?.account_list)) {
-          msg.authorize.account_list.forEach(a => {
-            if (a.loginid && a.token) accountTokenMapRef.current[a.loginid] = a.token;
-          });
-        }
         setTokenValid(true);
-        setTradeWsStatus("open");
         setTokenError("");
-        const loginid = msg.authorize?.loginid || "";
-        const isVirt = !!msg.authorize?.is_virtual;
-        if (msg.authorize?.balance !== undefined) setBalance(parseFloat(msg.authorize.balance).toFixed(2));
-        setExecLog("Authorized: " + loginid + " [" + (isVirt ? "DEMO" : "REAL") + "] ready to trade.");
-        ws.send(JSON.stringify({ account_list: 1, req_id: ++tradeReqIdRef.current }));
-        ws.send(JSON.stringify({ balance: 1, subscribe: 1, req_id: ++tradeReqIdRef.current }));
+        setExecLog("✓ Authorized — " + (msg.authorize?.loginid || "") + " · " + (msg.authorize?.is_virtual ? "DEMO" : "REAL") + " — ready to trade.");
+        // Request account list for switcher
+        tradeWsRef.current.send(JSON.stringify({ account_list: 1, req_id: ++tradeReqIdRef.current }));
       }
 
-      if (msg.msg_type === "account_list" && Array.isArray(msg.account_list)) {
+      if (msg.msg_type === "account_list" && msg.account_list) {
         const accounts = msg.account_list.map(a => ({
           loginid: a.loginid,
-          is_virtual: !!a.is_virtual,
+          is_virtual: a.is_virtual,
           currency: a.currency || "USD",
-          token: accountTokenMapRef.current[a.loginid] || tokenRef.current,
-          label: (a.is_virtual ? "DEMO" : "REAL") + " - " + a.loginid + " - " + (a.currency || "USD"),
+          token: a.token,
+          label: (a.is_virtual ? "🎮 DEMO" : "💰 REAL") + " · " + a.loginid + " · " + (a.currency || "USD"),
         }));
         setAccountList(accounts);
-        if (!activeAccountRef.current) {
-          const preferDemo = execModeRef.current === "demo";
-          const pick = preferDemo
-            ? (accounts.find(a => a.is_virtual) || accounts[0])
-            : (accounts.find(a => !a.is_virtual) || accounts[0]);
+        // Select based on pre-connect mode toggle (demo/real)
+        if (!activeAccount) {
+          const demo = accounts.find(a => a.is_virtual);
+          const real = accounts.find(a => !a.is_virtual);
+          // Default to demo regardless of execMode — safety first
+          const pick = demo || accounts[0];
           if (pick) {
-            activeAccountRef.current = pick;
-            tokenRef.current = pick.token;
             setActiveAccount(pick);
             setDerivToken(pick.token);
-            setExecLog(accounts.length + " accounts loaded. Auto-selected: " + pick.label);
+            setExecLog("✓ Accounts loaded · " + accounts.length + " account(s) · " + pick.label + " selected — switch anytime above.");
           }
         }
       }
@@ -1303,29 +1220,39 @@ export default function DerivOracle() {
       if (msg.msg_type === "proposal") {
         if (msg.error) {
           setExecFiring(false);
-          setExecLog("Proposal error: " + msg.error.message);
+          setExecLog("✗ Proposal error: " + msg.error.message);
           pendingProposalRef.current = null;
           return;
         }
+        // Immediately buy — this is the hot path, minimize object creation
         const proposalId = msg.proposal.id;
         const price = msg.proposal.ask_price;
-        pendingProposalRef.current = { ...(pendingProposalRef.current || {}), proposalId, price, t1: Date.now() };
+        const payout = msg.proposal.payout;
+        const t1 = Date.now();
+        pendingProposalRef.current = { proposalId, price, payout, t1 };
         ws.send(JSON.stringify({ buy: proposalId, price, req_id: ++tradeReqIdRef.current }));
-        setExecLog("Proposal $" + price + " -- buying...");
+        setExecLog("⚡ Proposal $" + price + " → Buying instantly...");
       }
 
       if (msg.msg_type === "buy") {
         if (msg.error) {
           setExecFiring(false);
-          setExecLog("Buy error: " + msg.error.message);
+          setExecLog("✗ Buy error: " + msg.error.message);
           pendingProposalRef.current = null;
           return;
         }
         const rtt = pendingProposalRef.current ? Date.now() - pendingProposalRef.current.t1 : null;
         if (rtt !== null) setLatencyMs(rtt);
         const contract = msg.buy;
-        setExecLog("Contract " + contract.contract_id + " bought. RTT: " + (rtt || "?") + "ms");
-        ws.send(JSON.stringify({ proposal_open_contracts: 1, contract_id: contract.contract_id, subscribe: 1, req_id: ++tradeReqIdRef.current }));
+        setExecLog("✓ Contract " + contract.contract_id + " purchased · RTT " + (rtt || "?") + "ms");
+        // Subscribe to contract updates
+        ws.send(JSON.stringify({
+          proposal_open_contracts: 1,
+          contract_id: contract.contract_id,
+          subscribe: 1,
+          req_id: ++tradeReqIdRef.current,
+        }));
+        // Add pending row to trade log
         const newTrade = {
           id: contract.contract_id,
           time: new Date().toLocaleTimeString(),
@@ -1343,16 +1270,23 @@ export default function DerivOracle() {
 
       if (msg.msg_type === "proposal_open_contracts") {
         const c = msg.proposal_open_contracts;
-        if (!c || c.is_sold !== 1) return;
+        if (!c || c.is_sold !== 1) return; // not settled yet
         const profit = parseFloat(c.profit) || 0;
         const won = profit > 0;
         const exitSpot = c.exit_tick_display_value || c.sell_spot || "?";
+        // Update the matching trade row
         execTradesRef.current = execTradesRef.current.map(t =>
-          t.id === c.contract_id ? { ...t, status: won ? "WIN" : "LOSS", pnl: profit, exitSpot } : t
+          t.id === c.contract_id
+            ? { ...t, status: won ? "WIN" : "LOSS", pnl: profit, exitSpot }
+            : t
         );
         setExecTrades([...execTradesRef.current]);
         setExecSessionPnl(prev => parseFloat((prev + profit).toFixed(2)));
-        setExecLog((won ? "WIN" : "LOSS") + " -- P&L: " + (profit >= 0 ? "+" : "") + profit.toFixed(2) + " USD | exit " + exitSpot);
+        setExecLog((won ? "✓ WIN" : "✗ LOSS") + " — P&L: " + (profit >= 0 ? "+" : "") + profit.toFixed(2) + " USD · exit " + exitSpot);
+        // Update real balance
+        if (tradeWsRef.current?.readyState === 1) {
+          tradeWsRef.current.send(JSON.stringify({ balance: 1, req_id: ++tradeReqIdRef.current }));
+        }
       }
 
       if (msg.msg_type === "balance" && msg.balance?.balance !== undefined) {
@@ -1360,38 +1294,9 @@ export default function DerivOracle() {
       }
     };
 
-    ws.onerror = () => { setTradeWsStatus("error"); setExecLog("Trade WS error -- check network/app_id."); };
-    ws.onclose = (ev) => { setTradeWsStatus("disconnected"); setExecLog("Trade WS closed (code " + ev.code + "). Click Connect to reconnect."); };
+    ws.onerror = () => setExecLog("⚠ Trade WS error — reconnecting...");
+    ws.onclose = () => setExecLog("Trade WS closed.");
   }, [execStake]);
-
-  const connectTradeWS = useCallback(() => {
-    if (tradeWsRef.current) {
-      tradeWsRef.current.onclose = null;
-      tradeWsRef.current.onerror = null;
-      tradeWsRef.current.onmessage = null;
-      if (tradeWsRef.current.readyState <= 1) tradeWsRef.current.close();
-      tradeWsRef.current = null;
-    }
-    const authToken = activeAccountRef.current?.token || tokenRef.current || "";
-    if (!authToken || authToken.length < 8) {
-      setExecLog("No token -- paste your Deriv API token above and click Save & Use.");
-      return;
-    }
-    setExecLog("Opening trade WebSocket...");
-    setTradeWsStatus("connecting");
-    setTokenValid(false);
-    setTokenError("");
-    const ws = new WebSocket(DERIV_WS_URL);
-    ws.binaryType = "arraybuffer";
-    tradeWsRef.current = ws;
-    attachTradeWsHandlers(ws);
-    ws.onopen = () => {
-      setTradeWsStatus("connecting");
-      setExecLog("WS open -- authorizing...");
-      const tok = activeAccountRef.current?.token || tokenRef.current || "";
-      ws.send(JSON.stringify({ authorize: tok, req_id: ++tradeReqIdRef.current }));
-    };
-  }, [attachTradeWsHandlers]);
 
   const disconnectTradeWS = useCallback(() => {
     if (tradeWsRef.current) {
@@ -1399,172 +1304,133 @@ export default function DerivOracle() {
       tradeWsRef.current.close();
       tradeWsRef.current = null;
     }
-    setTradeWsStatus("disconnected");
-    setExecLog("Disconnected.");
   }, []);
 
+  // ── FIRE TRADE ─────────────────────────────────────────────────────────────
+  // Called on every live tick when armed. Uses coldest digit as prediction.
+  // Guards: not already firing, min 20 ticks, armed, trade WS open.
+  const fireTrade = useCallback((currentDigits, currentTick) => {
+    if (!execArmed) return;
+    if (execFiring) return;
+    if (currentDigits.length < 20) return;
+    if (currentTick === lastExecTickRef.current) return; // same tick guard
+    const ws = tradeWsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setExecLog("⚠ Trade WS not open — reconnecting...");
+      connectTradeWS();
+      return;
+    }
+    const stake = parseFloat(execStake);
+    if (!stake || stake <= 0) { setExecLog("⚠ Invalid stake."); return; }
+
+    // Get coldest digit (best DIFFERS target) from live heatmap
+    const freq = getDigitFrequency(currentDigits);
+    const hc = getHotCold(freq);
+    const coldDigit = hc.cold.length > 0 ? hc.cold[0] : 5;
+
+    lastExecTickRef.current = currentTick;
+    setExecFiring(true);
+    setExecLog("⟳ Sending proposal — DIGITDIFF digit " + coldDigit + " stake $" + stake + "...");
+
+    const t0 = Date.now();
+    pendingProposalRef.current = { digit: coldDigit, stake, t0 };
+
+    ws.send(JSON.stringify({
+      proposal: 1,
+      amount: stake,
+      basis: "stake",
+      contract_type: "DIGITDIFF",
+      currency: "USD",
+      duration: 1,
+      duration_unit: "t",
+      symbol: symbol,
+      barrier: String(coldDigit),
+      req_id: ++tradeReqIdRef.current,
+    }));
+  }, [execArmed, execFiring, execStake, symbol, connectTradeWS]);
+
+  // Cleanup trade WS on unmount
+  useEffect(() => { return () => disconnectTradeWS(); }, [disconnectTradeWS]);
+
+
+  // ── SWITCH ACCOUNT (demo ↔ real) ─────────────────────────────────────────
   const switchAccount = useCallback((account) => {
     if (!account) return;
+    // Disarm first — never switch accounts mid-trade
     setExecArmed(false);
     setExecFiring(false);
     setTokenValid(false);
-    activeAccountRef.current = account;
-    tokenRef.current = account.token;
     setActiveAccount(account);
     setDerivToken(account.token);
-    setExecLog("Switching to " + account.label + "...");
+    setExecLog("Switching to " + account.label + " — re-authorizing...");
+
+    // Close and reopen trade WS with the new token
     if (tradeWsRef.current) {
       tradeWsRef.current.onclose = null;
-      tradeWsRef.current.onerror = null;
-      tradeWsRef.current.onmessage = null;
       tradeWsRef.current.close();
       tradeWsRef.current = null;
     }
+    // Small delay to ensure WS is fully closed before reopening
     setTimeout(() => {
       const ws = new WebSocket(DERIV_WS_URL);
       ws.binaryType = "arraybuffer";
       tradeWsRef.current = ws;
-      attachTradeWsHandlers(ws);
       ws.onopen = () => {
-        setTradeWsStatus("connecting");
         ws.send(JSON.stringify({ authorize: account.token, req_id: ++tradeReqIdRef.current }));
       };
-    }, 150);
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data));
+        if (msg.msg_type === "authorize") {
+          if (msg.error) {
+            setTokenValid(false);
+            setTokenError(msg.error.message);
+            setExecLog("✗ Switch failed: " + msg.error.message);
+            return;
+          }
+          setTokenValid(true);
+          setTokenError("");
+          setBalance(parseFloat(msg.authorize?.balance || 0).toFixed(2));
+          setExecLog("✓ Switched to " + account.label + " · Balance: " + (msg.authorize?.balance || "?") + " " + (account.currency || "USD"));
+        }
+        if (msg.msg_type === "proposal") {
+          if (msg.error) { setExecFiring(false); setExecLog("✗ Proposal: " + msg.error.message); return; }
+          const proposalId = msg.proposal.id;
+          const price = msg.proposal.ask_price;
+          pendingProposalRef.current = { ...pendingProposalRef.current, proposalId, price };
+          ws.send(JSON.stringify({ buy: proposalId, price, req_id: ++tradeReqIdRef.current }));
+        }
+        if (msg.msg_type === "buy") {
+          if (msg.error) { setExecFiring(false); setExecLog("✗ Buy: " + msg.error.message); return; }
+          const rtt = pendingProposalRef.current ? Date.now() - pendingProposalRef.current.t1 : null;
+          if (rtt) setLatencyMs(rtt);
+          ws.send(JSON.stringify({ proposal_open_contracts: 1, contract_id: msg.buy.contract_id, subscribe: 1, req_id: ++tradeReqIdRef.current }));
+          const newTrade = { id: msg.buy.contract_id, time: new Date().toLocaleTimeString(), digit: pendingProposalRef.current?.digit || "?", stake: pendingProposalRef.current?.stake || execStake, status: "PENDING", pnl: null, entrySpot: msg.buy.entry_spot || "?" };
+          execTradesRef.current = [newTrade, ...execTradesRef.current.slice(0, 99)];
+          setExecTrades([...execTradesRef.current]);
+          pendingProposalRef.current = null;
+          setExecFiring(false);
+        }
+        if (msg.msg_type === "proposal_open_contracts") {
+          const c = msg.proposal_open_contracts;
+          if (!c || c.is_sold !== 1) return;
+          const profit = parseFloat(c.profit) || 0;
+          const won = profit > 0;
+          execTradesRef.current = execTradesRef.current.map(t => t.id === c.contract_id ? { ...t, status: won ? "WIN" : "LOSS", pnl: profit, exitSpot: c.exit_tick_display_value || "?" } : t);
+          setExecTrades([...execTradesRef.current]);
+          setExecSessionPnl(prev => parseFloat((prev + profit).toFixed(2)));
+          setExecLog((won ? "✓ WIN" : "✗ LOSS") + " P&L: " + (profit >= 0 ? "+" : "") + profit.toFixed(2) + " USD");
+        }
+        if (msg.msg_type === "balance") setBalance(parseFloat(msg.balance?.balance || 0).toFixed(2));
+      };
+      ws.onerror = () => setExecLog("⚠ WS error after account switch.");
+      ws.onclose = () => setExecLog("Trade WS closed.");
+    }, 200);
+
+    // Re-authorize data WS for correct balance display
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ authorize: account.token }));
     }
-  }, [attachTradeWsHandlers]);
-
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // UNDER 5 PREDICTOR ENGINE
-  // Analyses live digit stream using 8 factors to predict if next digit < 5
-  // Based on the ROMANS 8:28 Oracle Under 5 bot strategy
-  // ══════════════════════════════════════════════════════════════════════════
-  const runUnder5Analysis = async () => {
-    if (digits.length < 30) {
-      setU5Result({ verdict:"WAIT", confidence:0, recommendedDigit:null, signal:"red",
-        factors:[], analysisLog:"Need at least 30 live ticks to run analysis.\nCurrently have " + digits.length + " ticks. Keep the app connected." });
-      return;
-    }
-    setU5Predicting(true);
-    setU5Result(null);
-
-    // ── Factor 1: Under-5 base rate ──────────────────────────────────────────
-    const last50 = digits.slice(-50);
-    const under5Count = last50.filter(d => d < 5).length;
-    const under5Rate = (under5Count / last50.length) * 100;
-    const baseExpected = 50; // 5 out of 10 digits = 50% natural rate
-    const f1Score = under5Rate >= 55 ? 2 : under5Rate >= 50 ? 1 : under5Rate >= 45 ? 0 : -1;
-    const f1Note = "Under-5 rate (last 50): " + under5Rate.toFixed(1) + "% " + (f1Score >= 1 ? "✓ BULLISH" : f1Score === 0 ? "~ NEUTRAL" : "✗ BEARISH");
-
-    // ── Factor 2: Last 2 digits both under 5 (bot's own entry signal) ────────
-    const last2Under = digits.slice(-2).every(d => d < 5);
-    const f2Score = last2Under ? 2 : 0;
-    const f2Note = "Last 2 ticks: " + digits.slice(-2).join(", ") + " → " + (last2Under ? "✓ BOTH UNDER 5 (bot signal)" : "✗ NOT both under 5");
-
-    // ── Factor 3: Momentum — last 5 vs previous 5 ────────────────────────────
-    const prev5Under = digits.slice(-10,-5).filter(d => d < 5).length;
-    const last5Under = digits.slice(-5).filter(d => d < 5).length;
-    const momentumDiff = last5Under - prev5Under;
-    const f3Score = momentumDiff > 0 ? 2 : momentumDiff === 0 ? 1 : 0;
-    const f3Note = "Momentum: prev5=" + prev5Under + "/5 → last5=" + last5Under + "/5 " + (f3Score === 2 ? "✓ GAINING" : f3Score === 1 ? "~ FLAT" : "✗ LOSING");
-
-    // ── Factor 4: Current streak analysis ────────────────────────────────────
-    let streak = 0; let streakType = null;
-    for (let i = digits.length - 1; i >= 0; i--) {
-      const isUnder = digits[i] < 5;
-      if (streakType === null) { streakType = isUnder ? "UNDER" : "OVER"; streak = 1; }
-      else if ((isUnder && streakType === "UNDER") || (!isUnder && streakType === "OVER")) streak++;
-      else break;
-    }
-    const f4Score = (streakType === "UNDER" && streak <= 3) ? 2 :
-                    (streakType === "UNDER" && streak <= 5) ? 1 :
-                    (streakType === "OVER" && streak >= 3) ? 2 : 0;
-    const f4Note = "Streak: " + streak + "× " + streakType + " " +
-      (f4Score === 2 ? "✓ FAVORABLE" : f4Score === 1 ? "~ OK" : "✗ RISKY (long under streak)");
-
-    // ── Factor 5: Digit frequency bias — which under-5 digit is coldest ──────
-    const freq = [0,1,2,3,4,5,6,7,8,9].map(d => ({ digit:d, count: last50.filter(x => x === d).length }));
-    const under5Digits = freq.filter(f => f.digit < 5).sort((a,b) => a.count - b.count);
-    const coldestUnder5 = under5Digits[0]; // least appeared under-5 digit = most "due"
-    const f5Score = coldestUnder5.count < 4 ? 2 : coldestUnder5.count < 6 ? 1 : 0;
-    const f5Note = "Coldest under-5: digit " + coldestUnder5.digit + " (" + coldestUnder5.count + "/50 = " + (coldestUnder5.count*2).toFixed(0) + "%) " + (f5Score >= 1 ? "✓ COLD (due)" : "~ WARM");
-
-    // ── Factor 6: Gap analysis — ticks since last under-5 ────────────────────
-    let gapSinceLast = 0;
-    for (let i = digits.length - 1; i >= 0; i--) {
-      if (digits[i] < 5) break;
-      gapSinceLast++;
-    }
-    const f6Score = gapSinceLast >= 3 ? 2 : gapSinceLast >= 1 ? 1 : 0;
-    const f6Note = "Gap since last under-5: " + gapSinceLast + " ticks " + (f6Score === 2 ? "✓ OVERDUE (high probability)" : f6Score === 1 ? "~ RECENT" : "✗ JUST HAPPENED");
-
-    // ── Factor 7: Last digit trend — even distribution check ─────────────────
-    const last10 = digits.slice(-10);
-    const last10Under = last10.filter(d => d < 5).length;
-    const f7Score = last10Under >= 6 ? 2 : last10Under >= 4 ? 1 : last10Under >= 2 ? 0 : -1;
-    const f7Note = "Last 10 digits: " + last10Under + "/10 under 5 " + (f7Score >= 1 ? "✓" : f7Score === 0 ? "~" : "✗");
-
-    // ── Factor 8: AI confirmation (optional, non-blocking) ───────────────────
-    let f8Note = "AI: skipped (insufficient key)";
-    let f8Score = 0;
-
-    // ── Composite Score ───────────────────────────────────────────────────────
-    const scores = [f1Score, f2Score, f3Score, f4Score, f5Score, f6Score, f7Score, f8Score];
-    const totalScore = scores.reduce((a,b) => a+b, 0);
-    const maxScore = 16; // max if all factors = 2
-    const rawConfidence = Math.round(((totalScore + maxScore/2) / (maxScore * 1.5)) * 100);
-    const confidence = Math.min(Math.max(rawConfidence, 5), 94); // cap 5-94% (never 100%)
-
-    const verdict = confidence >= 65 ? "ENTER" : confidence >= 50 ? "CAUTION" : "WAIT";
-    const signal = confidence >= 65 ? "green" : confidence >= 50 ? "yellow" : "red";
-
-    // ── Recommend specific digit ──────────────────────────────────────────────
-    // Pick coldest under-5 digit when confidence is high enough
-    const recommendedDigit = confidence >= 55 ? coldestUnder5.digit : null;
-
-    const analysisLog = [
-      "═══ ROMANS 8:28 ORACLE — UNDER 5 ANALYSIS ═══",
-      "Ticks analyzed: " + digits.length + " | Symbol: " + symbol,
-      "Time: " + new Date().toLocaleTimeString(),
-      "",
-      "FACTOR ANALYSIS:",
-      "  F1 Base rate:    " + f1Note,
-      "  F2 Bot signal:   " + f2Note,
-      "  F3 Momentum:     " + f3Note,
-      "  F4 Streak:       " + f4Note,
-      "  F5 Cold digit:   " + f5Note,
-      "  F6 Gap:          " + f6Note,
-      "  F7 Recent:       " + f7Note,
-      "",
-      "COMPOSITE SCORE: " + totalScore + " / " + (maxScore/2) + " → Confidence: " + confidence + "%",
-      "VERDICT: " + verdict + (recommendedDigit !== null ? " → Predict digit: " + recommendedDigit : ""),
-      "",
-      "INSTRUCTION: " + (verdict === "ENTER"
-        ? "Enter DIGITUNDER trade now. Set prediction = " + recommendedDigit + " in your bot."
-        : verdict === "CAUTION"
-        ? "Conditions borderline. Wait for F4 streak to reset or gap >= 3."
-        : "Do NOT enter. Wait for momentum + gap to align."),
-    ].join("\n");
-
-    // Short delay to feel like analysis is running
-    await new Promise(r => setTimeout(r, 800));
-
-    const factors = [
-      { label:"UNDER-5 RATE", value: under5Rate.toFixed(1) + "%", score: f1Score },
-      { label:"BOT SIGNAL (2× U5)", value: last2Under ? "✓ YES" : "✗ NO", score: f2Score },
-      { label:"MOMENTUM", value: momentumDiff > 0 ? "▲ GAINING" : momentumDiff === 0 ? "→ FLAT" : "▼ LOSING", score: f3Score },
-      { label:"CURRENT STREAK", value: streak + "× " + streakType, score: f4Score },
-      { label:"COLDEST U5 DIGIT", value: "Digit " + coldestUnder5.digit + " (" + coldestUnder5.count + "/50)", score: f5Score },
-      { label:"GAP SINCE U5", value: gapSinceLast + " ticks", score: f6Score },
-      { label:"LAST 10 RATE", value: last10Under + "/10", score: f7Score },
-      { label:"CONFIDENCE", value: confidence + "%", score: confidence >= 65 ? 2 : confidence >= 50 ? 1 : -1 },
-    ];
-
-    setU5Result({ verdict, confidence, recommendedDigit, signal, factors, analysisLog });
-    setU5Predicting(false);
-  };
+  }, [execStake]);
 
   const connectWS = useCallback((sym) => {
     // Close existing connection cleanly
@@ -1679,6 +1545,21 @@ export default function DerivOracle() {
           fireTrade(getLastDigits(updated), tickIndexRef.current);
         }
 
+        // ── PHASE 4: Fire live trade on each tick when armed ────────────
+        if (execArmed && !execFiring) {
+          fireTrade(getLastDigits(updated), tickIndexRef.current);
+        }
+
+        // ── PHASE 4: Fire live trade on each tick when armed ────────────
+        if (execArmed && !execFiring) {
+          fireTrade(getLastDigits(updated), tickIndexRef.current);
+        }
+
+        // ── PHASE 4: Fire live trade on each tick when armed ────
+        if (execArmed && !execFiring) {
+          fireTrade(getLastDigits(updated), tickIndexRef.current);
+        }
+
   // Auto AI every 25 new ticks
         aiCounterRef.current += 1;
         if (autoAIRef.current && aiCounterRef.current % 25 === 0) {
@@ -1686,12 +1567,23 @@ export default function DerivOracle() {
         }
       }
 
-      // Account list from data WS — log only; full handling in trade WS
+      // Account list — populate demo/real switcher
       if (msg.msg_type === "account_list" && msg.account_list) {
-        const count = msg.account_list.length;
-        setConnLog("✓ " + count + " account(s) found. Open Execute tab → Connect Trade WS to select account.");
+        const accounts = msg.account_list.map(a => ({
+          loginid: a.loginid,
+          is_virtual: a.is_virtual,
+          currency: a.currency || "USD",
+          token: a.token,
+          label: (a.is_virtual ? "🎮 DEMO" : "💰 REAL") + " · " + a.loginid + " · " + (a.currency || "USD"),
+        }));
+        setAccountList(accounts);
+        // Auto-select virtual (demo) account if none selected yet
+        const demo = accounts.find(a => a.is_virtual);
+        if (!activeAccount && demo) {
+          setActiveAccount(demo);
+          setConnLog("✓ Accounts loaded — demo account selected by default. Switch in Execute tab.");
+        }
       }
-
 
       // Live balance update
       if (msg.msg_type === "balance" && msg.balance?.balance !== undefined) {
@@ -1981,31 +1873,6 @@ export default function DerivOracle() {
   const statusClass = { idle: "pill-demo", connecting: "pill-connecting", live: "pill-live", error: "pill-error", demo: "pill-demo" };
   const statusLabel = { idle: "OFFLINE", connecting: "CONNECTING...", live: "● LIVE", error: "ERROR", demo: "DEMO MODE" };
 
-  // ── Under 5 tab computed vars ───────────────────────────────────────────────
-  const u5Last30 = digits.slice(-30);
-  const u5Rate30 = u5Last30.length > 0 ? Math.round((u5Last30.filter(d => d < 5).length / u5Last30.length) * 100) : 0;
-  const u5Last10 = digits.slice(-10);
-  const u5Rate10 = u5Last10.length > 0 ? Math.round((u5Last10.filter(d => d < 5).length / u5Last10.length) * 100) : 0;
-  let u5CurrentStreak = 0; let u5StreakType = "—";
-  for (let _i = digits.length - 1; _i >= 0; _i--) {
-    const _isU = digits[_i] < 5;
-    if (u5StreakType === "—") { u5StreakType = _isU ? "UNDER" : "OVER"; u5CurrentStreak = 1; }
-    else if ((_isU && u5StreakType === "UNDER") || (!_isU && u5StreakType === "OVER")) u5CurrentStreak++;
-    else break;
-  }
-  let u5GapSinceLast = 0;
-  for (let _j = digits.length - 1; _j >= 0; _j--) { if (digits[_j] < 5) break; u5GapSinceLast++; }
-
-  // ── Execute tab computed vars (extracted from JSX IIFE) ────────────────────
-  const execColdDigit = hotCold.cold.length > 0 ? hotCold.cold[0] : null;
-  const execHotDigit  = hotCold.hot.length  > 0 ? hotCold.hot[0]  : null;
-  const execWins   = execTradesRef.current.filter(t => t.status === "WIN").length;
-  const execLosses = execTradesRef.current.filter(t => t.status === "LOSS").length;
-  const execTotal  = execWins + execLosses;
-  const execWR     = execTotal > 0 ? ((execWins / execTotal) * 100).toFixed(1) : "—";
-  const execLatClass = latencyMs === null ? "latency-ok" : latencyMs < 80 ? "latency-good" : latencyMs < 200 ? "latency-ok" : "latency-bad";
-
-
   return (
     <>
       <style>{css}</style>
@@ -2108,7 +1975,7 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* DIGIT FREQUENCY -- always visible when data loaded */}
+          {/* DIGIT FREQUENCY — always visible when data loaded */}
           {digits.length > 0 && (
             <div className="panel" style={{ marginBottom: 12 }}>
               <div className="panel-title"><span className="dot dot-orange" />Last Digit Frequency — {symbol}</div>
@@ -2137,48 +2004,16 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* TABS - grouped nav + mobile dropdown */}
-          {ticks.length > 0 && (() => {
-            const TAB_GROUPS = [
-              { label:"ANALYSIS", tabs:[["overview","Overview"],["evenodd","Even/Odd"],["risefall","Rise/Fall"],["matchdiffer","Matches/Differs"],["overunder","Over/Under"]] },
-              { label:"TOOLS", tabs:[["signals","Signals"],["predict","Predict"],["under5","Under 5"]] },
-              { label:"TRADE", tabs:[["papertrade","Paper Trade"],["bots","Bots"],["execute","Execute"]] },
-            ];
-            return (
-              <div className="tabs-wrapper">
-                <select
-                  className="tab-mobile-select"
-                  value={activeTab}
-                  onChange={e => setActiveTab(e.target.value)}
-                >
-                  {TAB_GROUPS.map(g => (
-                    <optgroup key={g.label} label={"-- " + g.label + " --"}>
-                      {g.tabs.map(([id, label]) => (
-                        <option key={id} value={id}>{label}</option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </select>
-                <div className="tabs-row">
-                  {TAB_GROUPS.map((group) => (
-                    <div key={group.label} className="tab-group">
-                      <span className="tab-group-badge">{group.label}</span>
-                      {group.tabs.map(([id, label]) => (
-                        <button
-                          key={id}
-                          className={"tab" + (activeTab === id ? " active" : "")}
-                          onClick={() => setActiveTab(id)}
-                          title={group.label + ": " + label}
-                        >{label}</button>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })()}
+          {/* TABS */}
+          {ticks.length > 0 && (
+            <div className="tabs">
+              {[["overview","Overview"],["evenodd","Even/Odd"],["risefall","Rise/Fall"],["matchdiffer","Matches/Differs"],["overunder","Over/Under"],["signals","⚡ Signals"],["predict","🎯 Predict"],["papertrade","📋 Paper Trade"],["bots","🤖 Bots"],["execute","⚡ Execute"]].map(([id, label]) => (
+                <button key={id} className={`tab ${activeTab === id ? "active" : ""}`} onClick={() => setActiveTab(id)}>{label}</button>
+              ))}
+            </div>
+          )}
 
-          {/* ---- OVERVIEW TAB ---- */}
+          {/* ── OVERVIEW TAB ── */}
           {activeTab === "overview" && ticks.length > 0 && (
             <>
               <div className="grid-3">
@@ -2315,7 +2150,7 @@ export default function DerivOracle() {
             </>
           )}
 
-          {/* ---- EVEN/ODD TAB ---- */}
+          {/* ── EVEN/ODD TAB ── */}
           {activeTab === "evenodd" && evenOdd && (
             <div className="grid-2">
               <div className="panel accent-cyan">
@@ -2373,7 +2208,7 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* ---- RISE/FALL TAB ---- */}
+          {/* ── RISE/FALL TAB ── */}
           {activeTab === "risefall" && riseFall && (
             <div className="grid-2">
               <div className="panel accent-orange">
@@ -2417,7 +2252,7 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* ---- MATCHES/DIFFERS TAB ---- */}
+          {/* ── MATCHES/DIFFERS TAB ── */}
           {activeTab === "matchdiffer" && matchesDiffers && (
             <div className="grid-2">
               <div className="panel accent-orange">
@@ -2467,7 +2302,7 @@ export default function DerivOracle() {
             </div>
           )}
 
-          {/* ---- OVER/UNDER TAB ---- */}
+          {/* ── OVER/UNDER TAB ── */}
           {activeTab === "overunder" && overUnder && (
             <div className="grid-2">
               <div className="panel accent-yellow">
@@ -2520,7 +2355,7 @@ export default function DerivOracle() {
 
 
 
-          {/* ---- SIGNALS TAB ---- */}
+          {/* ── SIGNALS TAB ── */}
           {activeTab === "signals" && (
             <>
               {!allSignals ? (
@@ -2619,8 +2454,8 @@ export default function DerivOracle() {
                           <div className="wr-stat-label">WIN RATE</div>
                         </div>
                         <div className="wr-stat">
-                          <div className={`wr-stat-val ${parseFloat(ptStats.totalPnl) >= 0 ? "green" : "red"}`}>{parseFloat(ptStats.totalPnl) >= 0 ? "+" : ""}{"$"}{ptStats.totalPnl}</div>
-                          <div className="wr-stat-label">TOTAL P&amp;L</div>
+                          <div className={`wr-stat-val ${parseFloat(ptStats.totalPnl) >= 0 ? "green" : "red"}`}>{parseFloat(ptStats.totalPnl) >= 0 ? "+" : ""}${ptStats.totalPnl}</div>
+                          <div className="wr-stat-label">TOTAL P&L</div>
                         </div>
                         <div className="wr-stat">
                           <div className="wr-stat-val cyan">{ptStats.wins}W / {ptStats.losses}L</div>
@@ -2694,7 +2529,7 @@ export default function DerivOracle() {
             </>
           )}
 
-          {/* ---- PREDICT TAB ---- */}
+          {/* ── PREDICT TAB ── */}
           {activeTab === "predict" && digits.length >= 50 && predictTopPick && (
             <>
                 {/* TOP PICK BANNER */}
@@ -2731,7 +2566,7 @@ export default function DerivOracle() {
                       <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
                         <span style={{ fontSize: 11, color: "var(--text-dim)" }}>Balance $</span>
                         <input className="kelly-input" type="number" value={paperBalance} readOnly />
-                        <span style={{ fontSize: 13, color: "var(--green)" }}>{"→ $"}{(paperBalance * (predictTopPick?.halfKelly || 0) / 100).toFixed(2)}</span>
+                        <span style={{ fontSize: 13, color: "var(--green)" }}>→ ${(paperBalance * (predictTopPick?.halfKelly || 0) / 100).toFixed(2)}</span>
                       </div>
                       <button className="btn btn-green" style={{ marginTop: 8 }}
                         onClick={() => { setActiveTab("papertrade"); logPaperTrade(predictTopPick.digit, predictTopPick.confidence, predictTopPick.winProb, predictTopPick.halfKelly, predictTopPick.betType); }}>
@@ -2791,7 +2626,7 @@ export default function DerivOracle() {
             <div className="panel"><div className="empty-state">Need at least 50 ticks for reliable predictions. {digits.length}/50 loaded. Connect live — historical data loads automatically.</div></div>
           )}
 
-          {/* ---- PAPER TRADE TAB ---- */}
+          {/* ── PAPER TRADE TAB ── */}
           {activeTab === "papertrade" && (
             <>
               {/* Summary stats */}
@@ -2799,11 +2634,11 @@ export default function DerivOracle() {
                 <div className="panel">
                   <div className="panel-title"><span className="dot dot-green" />Session P&amp;L</div>
                   <div style={{ fontSize: 32, fontWeight: 700, fontFamily: "var(--head)" }} className={parseFloat(ptStats.totalPnl) >= 0 ? "pnl-positive" : "pnl-negative"}>
-                    {parseFloat(ptStats.totalPnl) >= 0 ? "+" : ""}{"$"}{ptStats.totalPnl}
+                    {parseFloat(ptStats.totalPnl) >= 0 ? "+" : ""}${ptStats.totalPnl}
                   </div>
                   <div className="stat-row" style={{ marginTop: 8 }}>
                     <span className="stat-label">Virtual Balance</span>
-                    <span className="stat-val green">{"$"}{paperBalance.toFixed(2)}</span>
+                    <span className="stat-val green">${paperBalance.toFixed(2)}</span>
                   </div>
                   <div className="stat-row">
                     <span className="stat-label">Started With</span>
@@ -2825,7 +2660,7 @@ export default function DerivOracle() {
                   </div>
                   {pendingTrade && (
                     <div style={{ marginTop: 8, padding: "6px 10px", background: "var(--yellow-dim)", border: "1px solid var(--yellow)", borderRadius: 3, fontSize: 11 }}>
-                      <span className="yellow">{"⏳ PENDING: Digit "}{pendingTrade.digit}{" | $"}{pendingTrade.stake}{" stake"}</span>
+                      <span className="yellow">⏳ PENDING: Digit {pendingTrade.digit} | ${pendingTrade.stake} stake</span>
                     </div>
                   )}
                 </div>
@@ -2948,7 +2783,7 @@ export default function DerivOracle() {
                             <td style={{ color: "var(--cyan)", fontWeight: 700 }}>{t.digit}</td>
                             <td style={{ color: t.betType === "MATCHES" ? "var(--orange)" : "var(--cyan)", fontSize: 9, letterSpacing: 1 }}>{t.betType || "MATCHES"}</td>
                             <td className="yellow">{t.confidence}%</td>
-                            <td>{"$"}{t.stake}</td>
+                            <td>${t.stake}</td>
                             <td className={t.result === "WIN" ? "pt-win" : t.result === "LOSS" ? "pt-loss" : "pt-pending"}>
                               {t.result === "WIN" ? "✓ WIN" : t.result === "LOSS" ? "✗ LOSS" : "⏳ PENDING"}
                             </td>
@@ -2980,7 +2815,7 @@ export default function DerivOracle() {
           )}
 
 
-          {/* ---- BOTS TAB ---- */}
+          {/* ── 🤖 BOTS TAB ── */}
           {activeTab === "bots" && (
             <div>
               {/* Sub-tabs */}
@@ -3078,7 +2913,7 @@ export default function DerivOracle() {
                           <div>
                             <div style={{ fontSize: 12, color: "var(--cyan)", fontFamily: "var(--head)", letterSpacing: 1 }}>🤖 {bot.name}</div>
                             <div style={{ fontSize: 9, color: "var(--text-dim)", marginTop: 3 }}>
-                              {bot.strategy} {"· Stake $"}{bot.stake}{"· Martingale"} {bot.martingale}× · Saved {bot.savedAt ? bot.savedAt.slice(0,10) : "?"}
+                              {bot.strategy} · Stake ${bot.stake} · Martingale {bot.martingale}× · Saved {bot.savedAt ? bot.savedAt.slice(0,10) : "?"}
                             </div>
                             {bot.improvedXml && <div style={{ fontSize: 9, color: "var(--green)", marginTop: 2 }}>✨ AI-improved version available</div>}
                           </div>
@@ -3176,10 +3011,18 @@ export default function DerivOracle() {
           )}
 
 
-          {/* ---- EXECUTE TAB -- PHASE 4 ---- */}
-          {activeTab === "execute" && (
+          {/* ── ⚡ EXECUTE TAB — PHASE 4 ── */}
+          {activeTab === "execute" && (() => {
+            const coldDigit = hotCold.cold.length > 0 ? hotCold.cold[0] : null;
+            const hotDigit  = hotCold.hot.length  > 0 ? hotCold.hot[0]  : null;
+            const wins  = execTradesRef.current.filter(t => t.status === "WIN").length;
+            const losses = execTradesRef.current.filter(t => t.status === "LOSS").length;
+            const total  = wins + losses;
+            const wr     = total > 0 ? ((wins / total) * 100).toFixed(1) : "—";
+            const latClass = latencyMs === null ? "latency-ok" : latencyMs < 80 ? "latency-good" : latencyMs < 200 ? "latency-ok" : "latency-bad";
+            return (
               <div>
-                {/* ---- TOKEN SETUP -- always visible ---- */}
+                {/* ── TOKEN SETUP — always visible ── */}
                 <div style={{ border:"1px solid " + (tokenValid ? "var(--green)" : tokenError ? "var(--red)" : "var(--border)"),
                   borderRadius:4, padding:14, marginBottom:10,
                   background: tokenValid ? "rgba(0,255,136,0.04)" : tokenError ? "rgba(255,50,50,0.06)" : "rgba(0,0,0,0.3)" }}>
@@ -3213,12 +3056,8 @@ export default function DerivOracle() {
                       value={tokenInput}
                       onChange={e => setTokenInput(e.target.value)}
                       onKeyDown={e => { if(e.key === "Enter" && tokenInput.trim()) {
-                        const t = tokenInput.trim();
-                        tokenRef.current = t;
-                        activeAccountRef.current = null;
-                        setDerivToken(t); setTokenValid(false); setTokenError("");
+                        setDerivToken(tokenInput.trim()); setTokenValid(false); setTokenError("");
                         setTokenInput(""); setAccountList([]); setActiveAccount(null);
-                        setExecLog("✓ Token saved — click ⚡ Connect Trade WS to verify.");
                       }}}
                       style={{ flex:1, fontSize:11 }}
                       type="password"
@@ -3228,16 +3067,13 @@ export default function DerivOracle() {
                       style={{ fontSize:10, padding:"8px 14px", whiteSpace:"nowrap" }}
                       onClick={() => {
                         if(tokenInput.trim()) {
-                          const t = tokenInput.trim();
-                          tokenRef.current = t;
-                          activeAccountRef.current = null;
-                          setDerivToken(t);
+                          setDerivToken(tokenInput.trim());
                           setTokenValid(false);
                           setTokenError("");
                           setTokenInput("");
                           setAccountList([]);
                           setActiveAccount(null);
-                          setExecLog("✓ Token saved — click ⚡ Connect Trade WS to verify.");
+                          setExecLog("Token saved — click Connect Trade WS to verify.");
                         }
                       }}>
                       Save &amp; Use
@@ -3248,14 +3084,15 @@ export default function DerivOracle() {
                     <div style={{ fontSize:9, color:"var(--text-dim)", marginTop:6 }}>
                       Token set {tokenValid ? "and verified ✓" : "— connect to verify"}
                       {" · "}<span style={{ cursor:"pointer", color:"var(--red)", textDecoration:"underline" }}
-                        onClick={() => { tokenRef.current = ""; activeAccountRef.current = null; setDerivToken(""); setTokenValid(false); setTokenError(""); setAccountList([]); setActiveAccount(null); }}>
+                        onClick={() => { setDerivToken(""); setTokenValid(false); setTokenError(""); setAccountList([]); setActiveAccount(null); }}>
                         clear
                       </span>
                     </div>
                   )}
                 </div>
 
-                {/* ---- ACCOUNT SWITCHER -- always visible ---- */}
+                {/* ── ACCOUNT SWITCHER ── */}
+                {/* ── ACCOUNT SWITCHER — always visible ── */}
                 <div style={{ border:"1px solid var(--border)", borderRadius:4, padding:14, marginBottom:10,
                   background:"rgba(0,0,0,0.3)" }}>
                   <div style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:2, marginBottom:10 }}>
@@ -3323,7 +3160,7 @@ export default function DerivOracle() {
                   )}
                 </div>
 
-                {/* ---- WARNING BANNER ---- */}
+                {/* ── WARNING BANNER ── */}
                 <div style={{ background: activeAccount?.is_virtual ? "rgba(0,255,136,0.04)" : "rgba(255,165,0,0.08)",
                   border:"1px solid " + (activeAccount?.is_virtual ? "var(--green)" : "var(--orange)"),
                   borderRadius:4, padding:"8px 14px", marginBottom:10, fontSize:10,
@@ -3333,33 +3170,33 @@ export default function DerivOracle() {
                     : "⚠ REAL ACCOUNT — DIFFERS on " + symbol + " · Start with $0.35 minimum stake · " + (activeAccount?.loginid || "")}
                 </div>
 
-                {/* ---- LIVE SIGNAL DISPLAY ---- */}
+                {/* ── LIVE SIGNAL DISPLAY ── */}
                 <div className="execute-grid" style={{ marginBottom:10 }}>
-                  <div className={"signal-live" + (execColdDigit !== null ? " hot" : "")}>
+                  <div className={"signal-live" + (coldDigit !== null ? " hot" : "")}>
                     <div className="signal-live-label">⚡ DIFFERS TARGET · COLDEST DIGIT</div>
                     <div className="signal-live-val" style={{ color:"var(--green)" }}>
-                      {execColdDigit !== null ? execColdDigit : "—"}
+                      {coldDigit !== null ? coldDigit : "—"}
                     </div>
                     <div style={{ fontSize:9, color:"var(--text-dim)" }}>
-                      {execColdDigit !== null ? "Least frequent — best DIFFERS prediction" : "Need 20+ ticks"}
+                      {coldDigit !== null ? "Least frequent — best DIFFERS prediction" : "Need 20+ ticks"}
                     </div>
                   </div>
                   <div className="signal-live">
                     <div className="signal-live-label">🔥 HOT DIGIT · MOST FREQUENT</div>
                     <div className="signal-live-val" style={{ color:"var(--orange)" }}>
-                      {execHotDigit !== null ? execHotDigit : "—"}
+                      {hotDigit !== null ? hotDigit : "—"}
                     </div>
                     <div style={{ fontSize:9, color:"var(--text-dim)" }}>Appearing most — avoid as DIFFERS target</div>
                   </div>
                 </div>
 
-                {/* ---- SESSION STATS ---- */}
+                {/* ── SESSION STATS ── */}
                 <div className="exec-stat-row">
                   {[
                     [total || "0", "TRADES", "var(--cyan)"],
                     [wins, "WINS", "var(--green)"],
                     [losses, "LOSSES", "var(--red)"],
-                    [wr === "—" ? "—" : execWR + "%", "WIN RATE", execWR !== "—" && parseFloat(wr) >= 47.4 ? "var(--green)" : "var(--yellow)"],
+                    [wr === "—" ? "—" : wr + "%", "WIN RATE", wr !== "—" && parseFloat(wr) >= 47.4 ? "var(--green)" : "var(--yellow)"],
                   ].map(([val,label,color]) => (
                     <div key={label} className="exec-stat">
                       <div className="exec-stat-val" style={{ color }}>{val}</div>
@@ -3381,7 +3218,7 @@ export default function DerivOracle() {
                   ))}
                 </div>
 
-                {/* ---- CONTROLS ---- */}
+                {/* ── CONTROLS ── */}
                 <div className="panel" style={{ marginBottom:10 }}>
                   <div className="panel-title"><span className="dot dot-orange"/>Trade Controls</div>
 
@@ -3397,38 +3234,22 @@ export default function DerivOracle() {
                         disabled={execArmed}
                       />
                     </div>
-                    <div style={{ display:"flex", flexDirection:"column", gap:6, justifyContent:"flex-end" }}>
-                      <button
-                        style={{ fontSize:10, padding:"9px 16px", whiteSpace:"nowrap", letterSpacing:1,
-                          fontFamily:"var(--head)", cursor:"pointer", borderRadius:3,
-                          border:"2px solid " + (tradeWsStatus === "open" ? "var(--green)" : tradeWsStatus === "connecting" ? "var(--yellow)" : tradeWsStatus === "error" ? "var(--red)" : "var(--cyan)"),
-                          background: tradeWsStatus === "open" ? "rgba(0,255,136,0.08)" : tradeWsStatus === "error" ? "rgba(255,50,50,0.08)" : "rgba(0,191,255,0.06)",
-                          color: tradeWsStatus === "open" ? "var(--green)" : tradeWsStatus === "connecting" ? "var(--yellow)" : tradeWsStatus === "error" ? "var(--red)" : "var(--cyan)" }}
-                        onClick={() => {
-                          const t = tokenRef.current || derivToken;
-                          if (!t || t.length < 10) { setExecLog("⚠ Save a token first — paste it above and click Save & Use."); return; }
-                          tokenRef.current = t;
-                          connectTradeWS();
-                        }}>
-                        {tradeWsStatus === "open" ? "✓ CONNECTED — CLICK TO RECONNECT" :
-                         tradeWsStatus === "connecting" ? "⟳ CONNECTING..." :
-                         tradeWsStatus === "error" ? "✗ ERROR — RETRY" :
-                         "⚡ CONNECT TRADE WS"}
+                    <div style={{ display:"flex", flexDirection:"column", gap:4, justifyContent:"flex-end" }}>
+                      <button className="btn btn-green" style={{ fontSize:10, padding:"7px 14px", whiteSpace:"nowrap" }}
+                        onClick={connectTradeWS}>
+                        ⚡ Connect Trade WS
                       </button>
-                      <div className="latency-bar">
-                        <div className={"latency-dot " + (tradeWsStatus === "open" ? (latencyMs !== null && latencyMs < 80 ? "latency-good" : "latency-ok") : tradeWsStatus === "connecting" ? "latency-ok" : "latency-bad")}/>
-                        <span style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:1 }}>
-                          {tradeWsStatus === "open" && tokenValid ? "✓ AUTH OK" + (latencyMs ? " · " + latencyMs + "ms RTT" : "") :
-                           tradeWsStatus === "connecting" ? "authorizing..." :
-                           tradeWsStatus === "error" ? "connection failed" : "not connected"}
-                        </span>
-                      </div>
                       <a href="https://app.deriv.com/account/api-token" target="_blank" rel="noreferrer"
                         style={{ fontSize:9, color:"var(--cyan)", textDecoration:"none", letterSpacing:1,
-                          padding:"3px 8px", border:"1px solid var(--border)", borderRadius:3, whiteSpace:"nowrap", textAlign:"center" }}>
+                          padding:"4px 8px", border:"1px solid var(--border)", borderRadius:3, whiteSpace:"nowrap" }}>
                         🔑 Get API Token ↗
                       </a>
-                    </div>
+                      <div className="latency-bar">
+                        <div className={"latency-dot " + latClass}/>
+                        <span style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:1 }}>
+                          {latencyMs !== null ? "RTT " + latencyMs + "ms" : "not measured"}
+                        </span>
+                      </div>
                     </div>
                   </div>
 
@@ -3464,12 +3285,12 @@ export default function DerivOracle() {
                       textAlign:"center", marginTop:6, letterSpacing:1,
                       padding:"5px 10px", borderRadius:3,
                       background: activeAccount?.is_virtual ? "rgba(0,255,136,0.06)" : "rgba(255,165,0,0.08)" }}>
-                      {activeAccount?.is_virtual ? "🎮 DEMO" : "⚠ REAL"}{" · DIGITDIFF DIFFERS · digit updates live · $"}{execStake}{" stake · "}{symbol}
+                      {activeAccount?.is_virtual ? "🎮 DEMO" : "⚠ REAL"} · DIGITDIFF DIFFERS · digit updates live · ${execStake} stake · {symbol}
                     </div>
                   )}
                 </div>
 
-                {/* ---- TRADE LOG ---- */}
+                {/* ── TRADE LOG ── */}
                 <div className="panel">
                   <div className="panel-title" style={{ justifyContent:"space-between" }}>
                     <span><span className="dot dot-green"/>Live Trade Log ({execTradesRef.current.length})</span>
@@ -3491,7 +3312,7 @@ export default function DerivOracle() {
                         <div key={t.id || i} className={"execute-log-row " + (t.status === "WIN" ? "win" : t.status === "LOSS" ? "loss" : "pending")}>
                           <span style={{ color:"var(--text-dim)" }}>{t.time}</span>
                           <span style={{ color:"var(--cyan)" }}>≠{t.digit}</span>
-                          <span>{"$"}{t.stake}</span>
+                          <span>${t.stake}</span>
                           <span style={{ color: t.status === "WIN" ? "var(--green)" : t.status === "LOSS" ? "var(--red)" : "var(--yellow)" }}>
                             {t.status}
                           </span>
@@ -3505,135 +3326,8 @@ export default function DerivOracle() {
                   )}
                 </div>
               </div>
-          )}
-
-
-          {/* ---- UNDER 5 PREDICTOR TAB ---- */}
-          {activeTab === "under5" && (
-            <div>
-              {/* Live stats bar */}
-              <div className="u5-stats-grid">
-                {[
-                  [u5Rate30 + "%", "U5 RATE (30T)", u5Rate30 >= 55 ? "var(--green)" : u5Rate30 >= 45 ? "var(--yellow)" : "var(--red)"],
-                  [u5Rate10 + "%", "U5 RATE (10T)", u5Rate10 >= 60 ? "var(--green)" : u5Rate10 >= 40 ? "var(--yellow)" : "var(--red)"],
-                  [u5CurrentStreak + "× " + u5StreakType, "CURRENT STREAK", u5StreakType === "UNDER" ? "var(--green)" : "var(--red)"],
-                  [u5GapSinceLast + " ticks", "GAP SINCE U5", u5GapSinceLast >= 3 ? "var(--green)" : u5GapSinceLast >= 1 ? "var(--yellow)" : "var(--text-dim)"],
-                ].map(([val, label, color]) => (
-                  <div key={label} className="u5-stat">
-                    <div className="u5-stat-val" style={{ color }}>{val}</div>
-                    <div className="u5-stat-label">{label}</div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Last 30 digits visual -- green=under5, red=over4 */}
-              <div className="u5-panel">
-                <div style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:2, marginBottom:8 }}>
-                  LAST 30 DIGITS · GREEN = UNDER 5 · RED = 5 OR ABOVE
-                </div>
-                <div className="u5-history">
-                  {digits.slice(-30).map((d, i) => (
-                    <div key={i} className={"u5-digit-pill " + (d < 5 ? "under" : "over")}>{d}</div>
-                  ))}
-                  {digits.length < 30 && (
-                    <div style={{ fontSize:10, color:"var(--text-dim)", padding:"4px 8px" }}>
-                      {30 - digits.length} more ticks needed...
-                    </div>
-                  )}
-                </div>
-                <div style={{ fontSize:9, color:"var(--text-dim)", marginTop:6 }}>
-                  Under 5: {u5Last30.filter(d => d < 5).length}/30 ({u5Rate30}%) · Over 4: {u5Last30.filter(d => d >= 5).length}/30
-                </div>
-              </div>
-
-              {/* PREDICT BUTTON */}
-              <button
-                className={"u5-predict-btn" + (u5Predicting ? " analysing" : "")}
-                onClick={runUnder5Analysis}
-                disabled={u5Predicting || digits.length < 30}
-              >
-                {u5Predicting
-                  ? "⟳ ANALYSING " + digits.length + " TICKS..."
-                  : digits.length < 30
-                  ? "⏳ NEED " + (30 - digits.length) + " MORE TICKS TO PREDICT"
-                  : "🎯 PREDICT NEXT UNDER 5 DIGIT"}
-              </button>
-
-              {/* RESULT */}
-              {u5Result && (
-                <div style={{ marginTop:10 }}>
-                  {/* Main verdict */}
-                  <div className={"u5-signal-box " + (u5Result.signal === "green" ? "enter" : u5Result.signal === "yellow" ? "caution" : "wait")}>
-                    <div className="u5-verdict" style={{ color: u5Result.signal === "green" ? "var(--green)" : u5Result.signal === "yellow" ? "var(--yellow)" : "var(--red)" }}>
-                      {u5Result.verdict === "ENTER" ? "✓ ENTER TRADE" : u5Result.verdict === "CAUTION" ? "⚠ CAUTION" : "✗ WAIT"}
-                    </div>
-                    <div style={{ fontSize:11, color:"var(--text-dim)", marginBottom:10 }}>
-                      Confidence: {u5Result.confidence}% · DIGITUNDER on {symbol}
-                    </div>
-                    {u5Result.recommendedDigit !== null ? (
-                      <div>
-                        <div className="u5-digit-big">{u5Result.recommendedDigit}</div>
-                        <div className="u5-digit-label">SET THIS AS PREDICTION IN YOUR BOT</div>
-                        <div style={{ fontSize:9, color:"var(--text-dim)", marginTop:8 }}>
-                          Digit {u5Result.recommendedDigit} is the coldest under-5 digit — least appeared, most likely due
-                        </div>
-                      </div>
-                    ) : (
-                      <div style={{ fontSize:11, color:"var(--text-dim)", marginTop:8 }}>
-                        {u5Result.verdict === "WAIT"
-                          ? "Conditions not aligned. Wait for momentum + gap signal."
-                          : "Conditions borderline — watch for gap ≥ 3 before entering."}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Factor breakdown */}
-                  <div className="u5-factors">
-                    {u5Result.factors.map((f, i) => (
-                      <div key={i} className={"u5-factor " + (f.score >= 2 ? "bullish" : f.score <= 0 ? "bearish" : "neutral")}>
-                        <div className="u5-factor-label">{f.label}</div>
-                        <div className="u5-factor-val" style={{ color: f.score >= 2 ? "var(--green)" : f.score <= 0 ? "var(--red)" : "var(--yellow)" }}>
-                          {f.value}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Analysis log */}
-                  <div className="u5-panel">
-                    <div style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:2, marginBottom:6 }}>ANALYSIS LOG</div>
-                    <div className="u5-analysis-log">{u5Result.analysisLog}</div>
-                  </div>
-
-                  {/* Bot instruction */}
-                  {u5Result.verdict === "ENTER" && u5Result.recommendedDigit !== null && (
-                    <div style={{ background:"rgba(0,255,136,0.06)", border:"1px solid var(--green)",
-                      borderRadius:4, padding:"12px 14px", fontSize:10, lineHeight:1.7 }}>
-                      <div style={{ color:"var(--green)", fontFamily:"var(--head)", letterSpacing:2, marginBottom:6 }}>
-                        📋 BOT INSTRUCTIONS
-                      </div>
-                      <div style={{ color:"var(--text)" }}>
-                        1. Open your <strong>ROMANS 8:28 Oracle Under 5 bot</strong> on Deriv<br/>
-                        2. Set <strong style={{ color:"var(--cyan)" }}>Prediction = {u5Result.recommendedDigit}</strong> in the bot<br/>
-                        3. Verify symbol is set to <strong style={{ color:"var(--cyan)" }}>{symbol}</strong><br/>
-                        4. Click <strong>Run</strong> — the bot will execute DIGITUNDER trades<br/>
-                        5. Stop the bot when Take Profit or Stop Loss is reached
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* How it works note */}
-              {!u5Result && (
-                <div style={{ fontSize:9, color:"var(--text-dim)", padding:"12px 0", lineHeight:1.8, textAlign:"center" }}>
-                  Analyses 7 factors: under-5 base rate, bot entry signal (2 consecutive under-5),<br/>
-                  momentum, streak status, coldest digit, gap analysis, recent rate<br/>
-                  → Returns confidence score, ENTER/WAIT verdict, and specific digit to set in your bot
-                </div>
-              )}
-            </div>
-          )}
+            );
+          })()}
 
           {/* PHASE 2 TEASER */}
           <div className="phase2-banner">
@@ -3644,7 +3338,7 @@ export default function DerivOracle() {
         </div>
       </div>
 
-      {/* ---- CONFIRM ARM OVERLAY ---- */}
+      {/* ── CONFIRM ARM OVERLAY ── */}
       {showConfirm && (
         <div className="confirm-overlay" onClick={() => setShowConfirm(false)}>
           <div className="confirm-box" onClick={e => e.stopPropagation()}>
@@ -3658,7 +3352,7 @@ export default function DerivOracle() {
                 {activeAccount?.is_virtual ? " DEMO (virtual funds)" : " REAL account"}
               </strong>.
               Each tick will place a DIGITDIFF DIFFERS contract on <strong style={{ color:"var(--cyan)" }}>{symbol}</strong> at
-              <strong style={{ color:"var(--green)" }}>{"$"}{execStake}</strong>{" stake using the live coldest digit."}
+              <strong style={{ color:"var(--green)" }}> ${execStake}</strong> stake using the live coldest digit.
               <br/><br/>
               <span style={{ color:"var(--orange)" }}>Romans 8:28 — all things work together for good.</span>
             </div>
