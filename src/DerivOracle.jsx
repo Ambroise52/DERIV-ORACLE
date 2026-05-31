@@ -338,6 +338,88 @@ Use trader language. Be direct. No disclaimers.`;
   }
 }
 
+
+// ---- LAB: PURE STATISTICS ENGINE ----------------------------------------
+// Regularized incomplete gamma (Lanczos logGamma + series/CF)
+function logGamma(x) {
+  const c = [0.99999999999980993,676.5203681218851,-1259.1392167224028,
+    771.32342877765313,-176.61502916214059,12.507343278686905,
+    -0.13857109526572012,9.9843695780195716e-6,1.5056327351493116e-7];
+  if (x < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * x)) - logGamma(1 - x);
+  x -= 1; let a = c[0]; const t = x + 7.5;
+  for (let i = 1; i < 9; i++) a += c[i] / (x + i);
+  return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a);
+}
+function gammaSeries(a, x) {
+  let term = 1 / a, sum = term;
+  for (let n = 1; n <= 200; n++) {
+    term *= x / (a + n); sum += term;
+    if (Math.abs(term) < 1e-8 * Math.abs(sum)) break;
+  }
+  return sum * Math.exp(-x + a * Math.log(x) - logGamma(a));
+}
+function gammaCF(a, x) {
+  let b = x + 1 - a, c = 1 / 1e-30, d = 1 / b, h = d;
+  for (let i = 1; i <= 200; i++) {
+    const an = -i * (i - a); b += 2;
+    d = an * d + b; if (Math.abs(d) < 1e-30) d = 1e-30;
+    c = b + an / c; if (Math.abs(c) < 1e-30) c = 1e-30;
+    d = 1 / d; const del = d * c; h *= del;
+    if (Math.abs(del - 1) < 1e-8) break;
+  }
+  return Math.exp(-x + a * Math.log(x) - logGamma(a)) * h;
+}
+function chiSqPValue(chiSq, df) {
+  if (chiSq <= 0) return 1;
+  const a = df / 2, x = chiSq / 2;
+  const p = x < a + 1 ? gammaSeries(a, x) : 1 - gammaCF(a, x);
+  return Math.max(0, Math.min(1, 1 - p));
+}
+function labRunChiSquare(digitArr) {
+  const n = digitArr.length;
+  if (n < 10) return null;
+  const freq = Array(10).fill(0);
+  digitArr.forEach(d => freq[d]++);
+  const expected = n / 10;
+  const chiSq = freq.reduce((s, o) => s + Math.pow(o - expected, 2) / expected, 0);
+  return {
+    chiSq: parseFloat(chiSq.toFixed(4)), df: 9,
+    pValue: parseFloat(chiSqPValue(chiSq, 9).toFixed(4)),
+    freq, n, expected: parseFloat(expected.toFixed(1))
+  };
+}
+function labBuildTransMatrix(digitArr) {
+  const mat = Array.from({length: 10}, () => Array(10).fill(0));
+  for (let i = 0; i < digitArr.length - 1; i++) mat[digitArr[i]][digitArr[i+1]]++;
+  const rowTests = mat.map((row, from) => {
+    const rowN = row.reduce((s, v) => s + v, 0);
+    if (rowN < 20) return { from, rowN, chiSq: null, pValue: null };
+    const exp = rowN / 10;
+    const cs = row.reduce((s, o) => s + Math.pow(o - exp, 2) / exp, 0);
+    return { from, rowN, chiSq: parseFloat(cs.toFixed(3)), pValue: parseFloat(chiSqPValue(cs, 9).toFixed(4)) };
+  });
+  return { mat, rowTests };
+}
+function labRunPersistence(digitArr) {
+  if (digitArr.length < 200) return null;
+  const h = Math.floor(digitArr.length / 2);
+  const t1 = labRunChiSquare(digitArr.slice(0, h));
+  const t2 = labRunChiSquare(digitArr.slice(h));
+  const drift = t1 && t2 ? parseFloat(Math.abs(t1.chiSq - t2.chiSq).toFixed(3)) : null;
+  return { t1, t2, drift, consistent: drift !== null && drift < 8 };
+}
+function labComputeVerdict(chi, trans, persist) {
+  if (!chi) return null;
+  let flags = 0;
+  if (chi.pValue < 0.05) flags++;
+  if (trans) { const sig = trans.rowTests.filter(r => r.pValue !== null && r.pValue < 0.05); if (sig.length >= 2) flags++; }
+  if (persist && !persist.consistent) flags++;
+  if (flags === 0) return "CLEAN";
+  if (flags === 1) return "MARGINAL";
+  return "SIGNAL";
+}
+// ---- END LAB STATISTICS ENGINE ------------------------------------------
+
 // ── CSS ───────────────────────────────────────────────────────────────────────
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Rajdhani:wght@400;500;600;700&display=swap');
@@ -1159,6 +1241,15 @@ export default function DerivOracle() {
   const pendingTradeRef = useRef(null);
   const tickIndexRef = useRef(0);
 
+  // ---- LAB: Signal Detection State ----
+  const [labStats, setLabStats] = useState(null);
+  const [labRunning, setLabRunning] = useState(false);
+  const [labTickTotal, setLabTickTotal] = useState(0);
+  const labTickBufferRef = useRef([]);
+  const labAutoCounterRef = useRef(0);
+  const runLabAnalysisRef = useRef(null);
+  const saveLabRef = useRef(null);
+
   const wsRef = useRef(null);
   const ticksRef = useRef([]);
   const autoAIRef = useRef(false);
@@ -1694,6 +1785,17 @@ export default function DerivOracle() {
         if (autoAIRef.current && aiCounterRef.current % 25 === 0) {
           triggerAIRef.current && triggerAIRef.current(updated);
         }
+        // ---- LAB: accumulate digit on every live tick ----
+        const labNewDigit = parseInt(parseFloat(price).toFixed(2).slice(-1));
+        labTickBufferRef.current = [...labTickBufferRef.current.slice(-99999), labNewDigit];
+        labAutoCounterRef.current += 1;
+        setLabTickTotal(labTickBufferRef.current.length);
+        if (labAutoCounterRef.current % 500 === 0) {
+          saveLabRef.current && saveLabRef.current(sym, labTickBufferRef.current);
+          if (runLabAnalysisRef.current && labTickBufferRef.current.length >= 1000) {
+            runLabAnalysisRef.current();
+          }
+        }
       }
 
       // Account list — populate demo/real switcher
@@ -1773,6 +1875,59 @@ export default function DerivOracle() {
   useEffect(() => { paperTradesRef.current = paperTrades; }, [paperTrades]);
   useEffect(() => { pendingTradeRef.current = pendingTrade; }, [pendingTrade]);
 
+  // ---- LAB: persist buffer to window.storage ----
+  const saveLabToStorage = useCallback(async (sym, buf) => {
+    try { await window.storage.set("ticklab-" + sym, JSON.stringify(buf.slice(-100000))); } catch(e) {}
+  }, []);
+  useEffect(() => { saveLabRef.current = saveLabToStorage; }, [saveLabToStorage]);
+
+  // ---- LAB: run all statistical tests on buffered digits ----
+  const runLabAnalysis = useCallback(() => {
+    const buf = labTickBufferRef.current;
+    if (buf.length < 100) return;
+    setLabRunning(true);
+    setTimeout(() => {
+      try {
+        const chi = labRunChiSquare(buf);
+        const trans = buf.length >= 200 ? labBuildTransMatrix(buf) : null;
+        const persist = buf.length >= 5000 ? labRunPersistence(buf) : null;
+        const verdict = labComputeVerdict(chi, trans, persist);
+        setLabStats({ chi, trans, persist, verdict, n: buf.length, ts: Date.now() });
+      } catch(e) {}
+      setLabRunning(false);
+    }, 50);
+  }, []);
+  useEffect(() => { runLabAnalysisRef.current = runLabAnalysis; }, [runLabAnalysis]);
+
+  // ---- LAB: clear all stored data for active symbol ----
+  const clearLabData = useCallback(async () => {
+    labTickBufferRef.current = [];
+    labAutoCounterRef.current = 0;
+    setLabTickTotal(0);
+    setLabStats(null);
+    try { await window.storage.delete("ticklab-" + symbol); } catch(e) {}
+  }, [symbol]);
+
+  // ---- LAB: load stored ticks from storage when symbol changes ----
+  useEffect(() => {
+    labTickBufferRef.current = [];
+    labAutoCounterRef.current = 0;
+    setLabTickTotal(0);
+    setLabStats(null);
+    (async () => {
+      try {
+        const stored = await window.storage.get("ticklab-" + symbol);
+        if (stored && stored.value) {
+          const arr = JSON.parse(stored.value);
+          if (Array.isArray(arr) && arr.length > 0) {
+            labTickBufferRef.current = arr;
+            setLabTickTotal(arr.length);
+          }
+        }
+      } catch(e) {}
+    })();
+  }, [symbol]);
+
   // ── PAPER TRADE LOGGER ────────────────────────────────────────────────────
   const logPaperTrade = useCallback((digit, confidence, winProb, halfKelly, betType) => {
     if (pendingTradeRef.current) return; // one trade at a time
@@ -1833,6 +1988,33 @@ export default function DerivOracle() {
   const predictMatrix = digits.length >= 20 ? getTransitionMatrix(digits) : null;
   const predictLastDigit = digits.length > 0 ? digits[digits.length - 1] : null;
 
+
+  // ---- Lab tab computed vars (all above return -- no IIFE in JSX) ----
+  const labN = labTickTotal;
+  const labUnlockChi = labN >= 1000;
+  const labUnlockPersistence = labN >= 5000;
+  const labUnlockVerdict = labN >= 50000;
+  const labChiPct = Math.min(100, Math.round((labN / 1000) * 100));
+  const labPersPct = Math.min(100, Math.round((labN / 5000) * 100));
+  const labVerdictPct = Math.min(100, Math.round((labN / 50000) * 100));
+  const labVerdictColor = !labStats ? "var(--text-dim)" : labStats.verdict === "CLEAN" ? "var(--green)" : labStats.verdict === "SIGNAL" ? "var(--cyan)" : "var(--orange)";
+  const labVerdictText = !labStats ? "AWAITING ANALYSIS" : labStats.verdict === "CLEAN" ? "NO SIGNAL DETECTED" : labStats.verdict === "SIGNAL" ? "SIGNAL DETECTED" : "MARGINAL -- COLLECT MORE DATA";
+  const labVerdictDesc = !labStats ? "Collect 1,000+ ticks then click Run Analysis." : labStats.verdict === "CLEAN" ? "All tests pass randomness. Any predictor built on this data amplifies noise. Base rate is your only edge." : labStats.verdict === "SIGNAL" ? "Statistically significant deviation found. See test details below before acting." : "One test flagged weakly. Continue collecting data before drawing conclusions.";
+  const labChiColor = !labStats || !labStats.chi ? "var(--text-dim)" : labStats.chi.pValue > 0.05 ? "var(--green)" : labStats.chi.pValue > 0.01 ? "var(--orange)" : "var(--red)";
+  const labChiVerdict = !labStats || !labStats.chi ? "--" : labStats.chi.pValue > 0.05 ? "UNIFORM (p=" + labStats.chi.pValue + ")" : labStats.chi.pValue > 0.01 ? "WEAK BIAS (p=" + labStats.chi.pValue + ")" : "BIAS DETECTED (p=" + labStats.chi.pValue + ")";
+  const labTransSigRows = labStats && labStats.trans ? labStats.trans.rowTests.filter(r => r.pValue !== null && r.pValue < 0.05) : [];
+  const labTransColor = !labStats || !labStats.trans ? "var(--text-dim)" : labTransSigRows.length === 0 ? "var(--green)" : labTransSigRows.length <= 2 ? "var(--orange)" : "var(--red)";
+  const labTransVerdict = !labStats || !labStats.trans ? "--" : labTransSigRows.length === 0 ? "INDEPENDENT" : labTransSigRows.length + " row(s) flagged (p < 0.05)";
+  const labPersColor = !labStats || !labStats.persist ? "var(--text-dim)" : labStats.persist.consistent ? "var(--green)" : "var(--orange)";
+  const labPersVerdict = !labStats || !labStats.persist ? "--" : labStats.persist.consistent ? "CONSISTENT (drift=" + labStats.persist.drift + ")" : "INCONSISTENT (drift=" + labStats.persist.drift + ")";
+  const labLastTs = labStats ? new Date(labStats.ts).toLocaleTimeString() : "never";
+  const labFreqBars = labStats && labStats.chi ? labStats.chi.freq.map((count, d) => {
+    const pct = parseFloat(((count / labStats.chi.n) * 100).toFixed(1));
+    const dev = parseFloat((pct - 10.0).toFixed(1));
+    const barW = Math.round((count / Math.max(...labStats.chi.freq, 1)) * 100);
+    const col = pct > 11.5 ? "var(--orange)" : pct < 8.5 ? "var(--cyan)" : "var(--green)";
+    return { d, count, pct, dev, barW, col };
+  }) : [];
 
   // ── BOT STORAGE HANDLERS ─────────────────────────────────────────────────
   const saveBotToStorage = async (botData, improvedXmlStr) => {
@@ -2172,6 +2354,7 @@ export default function DerivOracle() {
                   <option value="signals">Signals</option>
                   <option value="predict">Predict</option>
                   <option value="under5">Under 5</option>
+                  <option value="lab">Lab</option>
                 </optgroup>
                 <optgroup label="-- TRADE --">
                   <option value="papertrade">Paper Trade</option>
@@ -2188,7 +2371,7 @@ export default function DerivOracle() {
                 </div>
                 <div className="tab-group">
                   <span className="tab-group-badge">TOOLS</span>
-                  {[["signals","Signals"],["predict","Predict"],["under5","Under 5"]].map(([id,label]) => (
+                  {[["signals","Signals"],["predict","Predict"],["under5","Under 5"],["lab","Lab"]].map(([id,label]) => (
                     <button key={id} className={"tab"+(activeTab===id?" active":"")} onClick={()=>setActiveTab(id)}>{label}</button>
                   ))}
                 </div>
@@ -3623,6 +3806,212 @@ export default function DerivOracle() {
                   Returns confidence score, ENTER/WAIT verdict, and digit to set in your bot
                 </div>
               )}
+            </div>
+          )}
+
+          {/* ---- LAB TAB: SIGNAL DETECTION ENGINE ---- */}
+          {activeTab === "lab" && (
+            <div className="panel" style={{ marginBottom: 16 }}>
+
+              {/* ---- panel title ---- */}
+              <div className="panel-title" style={{ marginBottom: 12 }}>
+                <span className="dot" style={{ background: "var(--cyan)", boxShadow: "0 0 6px var(--cyan)", marginRight: 6 }} />
+                SIGNAL DETECTION LAB
+                <span style={{ marginLeft: 10, fontFamily: "var(--mono)", fontSize: 9, color: "var(--text-dim)", letterSpacing: 1 }}>
+                  {symbol} -- {labN.toLocaleString()} ticks banked
+                </span>
+              </div>
+
+              {/* ---- scientific disclaimer ---- */}
+              <div style={{ fontSize: 10, color: "var(--text-dim)", lineHeight: 1.7, marginBottom: 14, padding: "8px 10px",
+                background: "var(--bg2)", borderRadius: 3, borderLeft: "2px solid var(--text-dim)" }}>
+                Passive tick accumulator + rigorous statistical tests. No trading recommendations attached.
+                A confirmed signal requires p &lt; 0.05 across multiple tests at n &gt;= 50,000 ticks.
+                If tests return clean, no predictor can add edge beyond the base rate.
+              </div>
+
+              {/* ---- collection progress bars ---- */}
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>
+                  COLLECTION THRESHOLDS
+                </div>
+
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, marginBottom: 4 }}>
+                    <span style={{ color: labUnlockChi ? "var(--green)" : "var(--text-dim)" }}>TEST 1 -- Chi-Square Uniformity</span>
+                    <span style={{ color: labUnlockChi ? "var(--green)" : "var(--text-dim)", fontFamily: "var(--mono)" }}>
+                      {labN.toLocaleString()} / 1,000 {labUnlockChi ? "UNLOCKED" : "collecting"}
+                    </span>
+                  </div>
+                  <div style={{ height: 4, background: "var(--bg3)", borderRadius: 2 }}>
+                    <div style={{ width: labChiPct + "%", height: "100%", background: labUnlockChi ? "var(--green)" : "var(--text-dim)", borderRadius: 2, transition: "width 0.5s" }} />
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, marginBottom: 4 }}>
+                    <span style={{ color: labUnlockPersistence ? "var(--green)" : "var(--text-dim)" }}>TEST 3 -- Persistence Check</span>
+                    <span style={{ color: labUnlockPersistence ? "var(--green)" : "var(--text-dim)", fontFamily: "var(--mono)" }}>
+                      {labN.toLocaleString()} / 5,000 {labUnlockPersistence ? "UNLOCKED" : ""}
+                    </span>
+                  </div>
+                  <div style={{ height: 4, background: "var(--bg3)", borderRadius: 2 }}>
+                    <div style={{ width: labPersPct + "%", height: "100%", background: labUnlockPersistence ? "var(--green)" : "var(--border2)", borderRadius: 2, transition: "width 0.5s" }} />
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 4 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, marginBottom: 4 }}>
+                    <span style={{ color: labUnlockVerdict ? "var(--cyan)" : "var(--text-dim)" }}>FINAL VERDICT (reliable at this threshold)</span>
+                    <span style={{ color: labUnlockVerdict ? "var(--cyan)" : "var(--text-dim)", fontFamily: "var(--mono)" }}>
+                      {labN.toLocaleString()} / 50,000 {labUnlockVerdict ? "RELIABLE" : ""}
+                    </span>
+                  </div>
+                  <div style={{ height: 4, background: "var(--bg3)", borderRadius: 2 }}>
+                    <div style={{ width: labVerdictPct + "%", height: "100%", background: labUnlockVerdict ? "var(--cyan)" : "var(--border)", borderRadius: 2, transition: "width 0.5s" }} />
+                  </div>
+                </div>
+              </div>
+
+              {/* ---- controls ---- */}
+              <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                <button className="btn btn-green" style={{ flex: 1, fontSize: 10, letterSpacing: 2, padding: "8px" }}
+                  onClick={runLabAnalysis} disabled={labRunning || labN < 100}>
+                  {labRunning ? "RUNNING..." : "RUN ANALYSIS NOW"}
+                </button>
+                <button className="btn" style={{ fontSize: 10, letterSpacing: 1, padding: "8px 16px" }}
+                  onClick={clearLabData}>
+                  CLEAR
+                </button>
+              </div>
+
+              {/* ---- verdict banner ---- */}
+              <div style={{ border: "1px solid " + labVerdictColor, borderRadius: 4, padding: "12px 14px",
+                marginBottom: 16, background: "var(--bg2)" }}>
+                <div style={{ fontFamily: "var(--head)", fontSize: 14, letterSpacing: 3, color: labVerdictColor, marginBottom: 6 }}>
+                  {labVerdictText}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-dim)", lineHeight: 1.6 }}>
+                  {labVerdictDesc}
+                </div>
+                {labStats && (
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", marginTop: 6, fontFamily: "var(--mono)" }}>
+                    last run: {labLastTs} on {labStats.n.toLocaleString()} ticks
+                  </div>
+                )}
+              </div>
+
+              {/* ---- test 1: digit uniformity ---- */}
+              <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--bg2)", borderRadius: 4 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, textTransform: "uppercase" }}>
+                    TEST 1 -- DIGIT UNIFORMITY (CHI-SQUARE)
+                  </div>
+                  {labUnlockChi && labStats && labStats.chi ? (
+                    <span style={{ fontSize: 9, color: labChiColor, fontFamily: "var(--mono)", letterSpacing: 1 }}>{labChiVerdict}</span>
+                  ) : (
+                    <span style={{ fontSize: 9, color: "var(--text-dim)" }}>need 1,000 ticks</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", lineHeight: 1.7, marginBottom: 8 }}>
+                  Are all 10 digits appearing equally? Expected: each 10.0%.
+                  Chi-square tests whether observed counts deviate significantly from uniform distribution.
+                </div>
+                {labStats && labStats.chi && (
+                  <>
+                    <div style={{ fontSize: 9, color: "var(--text)", marginBottom: 10, fontFamily: "var(--mono)", lineHeight: 1.8 }}>
+                      chi-sq = {labStats.chi.chiSq} | df = 9 | p = {labStats.chi.pValue} | n = {labStats.chi.n.toLocaleString()}
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 4 }}>
+                      {labFreqBars.map(f => (
+                        <div key={f.d} style={{ background: "var(--bg3)", borderRadius: 3, padding: "6px 8px" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, marginBottom: 3 }}>
+                            <span style={{ color: f.col, fontWeight: 700, fontFamily: "var(--mono)" }}>{f.d}</span>
+                            <span style={{ color: f.col, fontFamily: "var(--mono)" }}>{f.pct}%</span>
+                          </div>
+                          <div style={{ height: 3, background: "var(--bg2)", borderRadius: 2 }}>
+                            <div style={{ width: f.barW + "%", height: "100%", background: f.col, borderRadius: 2 }} />
+                          </div>
+                          <div style={{ fontSize: 8, color: "var(--text-dim)", marginTop: 2, fontFamily: "var(--mono)" }}>
+                            {f.dev > 0 ? "+" : ""}{f.dev}pp
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* ---- test 2: serial dependence (transition matrix) ---- */}
+              <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--bg2)", borderRadius: 4 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, textTransform: "uppercase" }}>
+                    TEST 2 -- SERIAL DEPENDENCE (TRANSITION MATRIX)
+                  </div>
+                  <span style={{ fontSize: 9, color: labTransColor, fontFamily: "var(--mono)", letterSpacing: 1 }}>{labTransVerdict}</span>
+                </div>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", lineHeight: 1.7 }}>
+                  Builds 10x10 matrix of P(next digit | current digit). Chi-square tests each row.
+                  A significant row means knowing that digit helps predict the next -- serial dependence.
+                </div>
+                {labStats && labStats.trans && labTransSigRows.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 9, color: "var(--orange)", marginBottom: 4, letterSpacing: 1 }}>FLAGGED ROWS (p &lt; 0.05):</div>
+                    {labTransSigRows.map(r => (
+                      <div key={r.from} style={{ fontSize: 9, fontFamily: "var(--mono)", color: "var(--text)", padding: "2px 0", lineHeight: 1.8 }}>
+                        after digit {r.from}: chi-sq = {r.chiSq}, p = {r.pValue} ({r.rowN} obs)
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {labStats && labStats.trans && labTransSigRows.length === 0 && (
+                  <div style={{ fontSize: 9, color: "var(--green)", marginTop: 6 }}>
+                    No rows flagged. Serial independence confirmed at p &gt; 0.05 across all digits.
+                  </div>
+                )}
+                {(!labStats || !labStats.trans) && labN < 200 && (
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", marginTop: 6 }}>Requires 200+ ticks and Run Analysis.</div>
+                )}
+              </div>
+
+              {/* ---- test 3: pattern persistence ---- */}
+              <div style={{ padding: "10px 12px", background: "var(--bg2)", borderRadius: 4, marginBottom: 14 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, textTransform: "uppercase" }}>
+                    TEST 3 -- PATTERN PERSISTENCE
+                  </div>
+                  {labUnlockPersistence ? (
+                    <span style={{ fontSize: 9, color: labPersColor, fontFamily: "var(--mono)", letterSpacing: 1 }}>{labPersVerdict}</span>
+                  ) : (
+                    <span style={{ fontSize: 9, color: "var(--text-dim)" }}>need 5,000 ticks</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", lineHeight: 1.7 }}>
+                  Splits stored ticks in half and runs chi-square on each half independently.
+                  A pattern that only appears in one half is noise. Drift below 8 = consistent across halves.
+                </div>
+                {labStats && labStats.persist && (
+                  <div style={{ marginTop: 8, fontFamily: "var(--mono)", fontSize: 9, lineHeight: 1.9 }}>
+                    <div style={{ color: "var(--text)" }}>
+                      first half: chi-sq = {labStats.persist.t1 ? labStats.persist.t1.chiSq : "--"},
+                      p = {labStats.persist.t1 ? labStats.persist.t1.pValue : "--"}
+                    </div>
+                    <div style={{ color: "var(--text)" }}>
+                      second half: chi-sq = {labStats.persist.t2 ? labStats.persist.t2.chiSq : "--"},
+                      p = {labStats.persist.t2 ? labStats.persist.t2.pValue : "--"}
+                    </div>
+                    <div style={{ color: labPersColor }}>
+                      drift = {labStats.persist.drift} -- {labStats.persist.consistent ? "consistent across halves" : "patterns differ between halves -- likely noise"}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ---- footer note ---- */}
+              <div style={{ fontSize: 9, color: "var(--text-dim)", lineHeight: 1.8, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+                Auto-saves every 500 ticks -- data persists across sessions per symbol --
+                currently collecting for {symbol}
+              </div>
             </div>
           )}
 
