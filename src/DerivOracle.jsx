@@ -13,6 +13,12 @@ const OR_KEY = process.env.REACT_APP_OPENROUTER_KEY || "sk-or-v1-9b0da9cf826372e
 const OR_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OR_MODEL = "deepseek/deepseek-r1:free";
 
+// ── LAB COLLECTOR BACKEND ─────────────────────────────────────────────────────
+// 24/7 Render service — Task 1 of ORACLE_BUILD_SPEC.md
+// Env var overrides the hardcoded URL so staging/prod can differ without a code change.
+const LAB_COLLECTOR_URL = process.env.REACT_APP_LAB_COLLECTOR_URL
+  || "https://deriv-oracle-collector.onrender.com";
+
 // ── DERIV CONFIG ──────────────────────────────────────────────────────────────
 const DERIV_APP_ID = process.env.REACT_APP_DERIV_APP_ID || "1089";
 // Token loaded from env — never hardcode a live PAT here
@@ -1939,6 +1945,9 @@ export default function DerivOracle() {
 
   // ---- LAB: persist buffer to window.storage ----
   const saveLabToStorage = useCallback(async (sym, buf) => {
+    // Backend collector owns persistence for 1HZ100V.
+    // For other symbols, keep writing to window.storage as before.
+    if (sym === "1HZ100V") return;
     try { await window.storage.set("ticklab-" + sym, JSON.stringify(buf.slice(-100000))); } catch(e) {}
   }, []);
   useEffect(() => { saveLabRef.current = saveLabToStorage; }, [saveLabToStorage]);
@@ -1970,23 +1979,47 @@ export default function DerivOracle() {
     try { await window.storage.delete("ticklab-" + symbol); } catch(e) {}
   }, [symbol]);
 
-  // ---- LAB: load stored ticks from storage when symbol changes ----
+  // ---- LAB: load stored ticks when symbol changes ----
+  // 1HZ100V -> fetch from backend collector (Render + Neon, Task 1)
+  // Other symbols -> read from window.storage (session cache, unchanged)
   useEffect(() => {
     labTickBufferRef.current = [];
     labAutoCounterRef.current = 0;
     setLabTickTotal(0);
     setLabStats(null);
     (async () => {
-      try {
-        const stored = await window.storage.get("ticklab-" + symbol);
-        if (stored && stored.value) {
-          const arr = JSON.parse(stored.value);
-          if (Array.isArray(arr) && arr.length > 0) {
-            labTickBufferRef.current = arr;
-            setLabTickTotal(arr.length);
+      if (symbol === "1HZ100V") {
+        // ---- BACKEND PATH ----
+        try {
+          setLabStats(null);
+          const res = await fetch(
+            LAB_COLLECTOR_URL + "/lab/1HZ100V/ticks?limit=100000",
+            { signal: AbortSignal.timeout(12000) }
+          );
+          if (!res.ok) throw new Error("Collector API " + res.status);
+          const data = await res.json();
+          if (Array.isArray(data.digits) && data.digits.length > 0) {
+            labTickBufferRef.current = data.digits;
+            setLabTickTotal(data.digits.length);
           }
+        } catch(e) {
+          // Collector unavailable (cold start / offline) -- silent fallback
+          // Live ticks accumulating in labTickBufferRef will still work
+          console.warn("[Lab] Backend fetch failed:", e.message, "-- using live ticks only");
         }
-      } catch(e) {}
+      } else {
+        // ---- LOCAL STORAGE PATH (all other symbols) ----
+        try {
+          const stored = await window.storage.get("ticklab-" + symbol);
+          if (stored && stored.value) {
+            const arr = JSON.parse(stored.value);
+            if (Array.isArray(arr) && arr.length > 0) {
+              labTickBufferRef.current = arr;
+              setLabTickTotal(arr.length);
+            }
+          }
+        } catch(e) {}
+      }
     })();
   }, [symbol]);
 
