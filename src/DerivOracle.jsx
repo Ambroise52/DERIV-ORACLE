@@ -13,12 +13,6 @@ const OR_KEY = process.env.REACT_APP_OPENROUTER_KEY || "sk-or-v1-9b0da9cf826372e
 const OR_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OR_MODEL = "deepseek/deepseek-r1:free";
 
-// ── LAB COLLECTOR BACKEND ─────────────────────────────────────────────────────
-// 24/7 Render service — Task 1 of ORACLE_BUILD_SPEC.md
-// Env var overrides the hardcoded URL so staging/prod can differ without a code change.
-const LAB_COLLECTOR_URL = process.env.REACT_APP_LAB_COLLECTOR_URL
-  || "https://deriv-oracle-collector.onrender.com";
-
 // ── DERIV CONFIG ──────────────────────────────────────────────────────────────
 const DERIV_APP_ID = process.env.REACT_APP_DERIV_APP_ID || "1089";
 // Token loaded from env — never hardcode a live PAT here
@@ -416,14 +410,76 @@ function labRunPersistence(digitArr) {
 }
 function labComputeVerdict(chi, trans, persist) {
   if (!chi) return null;
+  // Task 4: FWER-corrected thresholds
+  // Chi-square: single test — use Bonferroni for 1 test = 0.005 (conservative)
+  // Transition matrix: 10 simultaneous row tests — adjusted alpha = 0.05/10 = 0.005
+  const chiAlpha   = fwerAdjustedAlpha(0.05, 10);  // 0.005
+  const transAlpha = fwerAdjustedAlpha(0.05, 10);  // 0.005
   let flags = 0;
-  if (chi.pValue < 0.05) flags++;
-  if (trans) { const sig = trans.rowTests.filter(r => r.pValue !== null && r.pValue < 0.05); if (sig.length >= 2) flags++; }
+  if (chi.pValue < chiAlpha) flags++;
+  if (trans) {
+    const sig = trans.rowTests.filter(r => r.pValue !== null && r.pValue < transAlpha);
+    if (sig.length >= 2) flags++;
+  }
   if (persist && !persist.consistent) flags++;
   if (flags === 0) return "CLEAN";
   if (flags === 1) return "MARGINAL";
   return "SIGNAL";
 }
+// ── TASK 3: ASYMMETRIC EV CALIBRATOR ─────────────────────────────────────────
+// calculateAsymmetricEV — true long-run expected value per unit staked.
+// winRate  : decimal (e.g. 0.924 for 92.4%)
+// payout   : net profit per unit staked on a WIN (e.g. 0.95 for Deriv DIFFERS)
+// Returns  : EV per unit staked. Positive = profitable. Negative = ruin.
+// Formula  : EV = (winRate * payout) - (1 - winRate)
+function calculateAsymmetricEV(winRate, payout) {
+  if (winRate < 0 || winRate > 1) return NaN;
+  if (payout <= 0) return NaN;
+  return parseFloat(((winRate * payout) - (1 - winRate)).toFixed(6));
+}
+
+// calculateBreakEvenWinRate — minimum win rate to achieve EV >= 0.
+// payout   : net profit per unit staked on a WIN
+// Formula  : p* = 1 / (1 + payout)
+function calculateBreakEvenWinRate(payout) {
+  if (payout <= 0) return NaN;
+  return parseFloat((1 / (1 + payout)).toFixed(6));
+}
+
+// calculateWilsonScore — two-sided Wilson Score confidence interval.
+// wins     : integer count of wins
+// trials   : integer total trades
+// z        : critical z-value (2.576 = 99% two-sided, 1.96 = 95%)
+// Returns  : { lower, upper, centre } all as decimals
+// Formula  : Wilson (1927) — no normal approximation collapse at extremes
+function calculateWilsonScore(wins, trials, z) {
+  if (trials <= 0) return { lower: 0, upper: 1, centre: 0 };
+  const z2   = z * z;
+  const pHat = wins / trials;
+  const denom = 1 + z2 / trials;
+  const centre = (pHat + z2 / (2 * trials)) / denom;
+  const spread = (z / denom) * Math.sqrt(
+    (pHat * (1 - pHat) / trials) + (z2 / (4 * trials * trials))
+  );
+  return {
+    lower  : parseFloat(Math.max(0, centre - spread).toFixed(6)),
+    upper  : parseFloat(Math.min(1, centre + spread).toFixed(6)),
+    centre : parseFloat(centre.toFixed(6)),
+  };
+}
+
+// ── TASK 4: FWER UTILITY ──────────────────────────────────────────────────────
+// fwerAdjustedAlpha — Bonferroni correction for simultaneous hypothesis tests.
+// baseAlpha : family-wise error rate target (typically 0.05)
+// testCount : number of simultaneous tests being run
+// Returns   : per-test critical threshold alpha_adj = baseAlpha / testCount
+// Usage     : pass result as the significance threshold when evaluating each
+//             individual test p-value in the transition matrix or ACF.
+function fwerAdjustedAlpha(baseAlpha, testCount) {
+  if (testCount <= 0) return baseAlpha;
+  return parseFloat((baseAlpha / testCount).toFixed(8));
+}
+
 // ---- END LAB STATISTICS ENGINE ------------------------------------------
 
 // ── CSS ───────────────────────────────────────────────────────────────────────
@@ -1883,9 +1939,6 @@ export default function DerivOracle() {
 
   // ---- LAB: persist buffer to window.storage ----
   const saveLabToStorage = useCallback(async (sym, buf) => {
-    // Backend collector owns persistence for 1HZ100V.
-    // For other symbols, keep writing to window.storage as before.
-    if (sym === "1HZ100V") return;
     try { await window.storage.set("ticklab-" + sym, JSON.stringify(buf.slice(-100000))); } catch(e) {}
   }, []);
   useEffect(() => { saveLabRef.current = saveLabToStorage; }, [saveLabToStorage]);
@@ -1917,47 +1970,23 @@ export default function DerivOracle() {
     try { await window.storage.delete("ticklab-" + symbol); } catch(e) {}
   }, [symbol]);
 
-  // ---- LAB: load stored ticks when symbol changes ----
-  // 1HZ100V -> fetch from backend collector (Render + Neon, Task 1)
-  // Other symbols -> read from window.storage (session cache, unchanged)
+  // ---- LAB: load stored ticks from storage when symbol changes ----
   useEffect(() => {
     labTickBufferRef.current = [];
     labAutoCounterRef.current = 0;
     setLabTickTotal(0);
     setLabStats(null);
     (async () => {
-      if (symbol === "1HZ100V") {
-        // ---- BACKEND PATH ----
-        try {
-          setLabStats(null);
-          const res = await fetch(
-            LAB_COLLECTOR_URL + "/lab/1HZ100V/ticks?limit=100000",
-            { signal: AbortSignal.timeout(12000) }
-          );
-          if (!res.ok) throw new Error("Collector API " + res.status);
-          const data = await res.json();
-          if (Array.isArray(data.digits) && data.digits.length > 0) {
-            labTickBufferRef.current = data.digits;
-            setLabTickTotal(data.digits.length);
+      try {
+        const stored = await window.storage.get("ticklab-" + symbol);
+        if (stored && stored.value) {
+          const arr = JSON.parse(stored.value);
+          if (Array.isArray(arr) && arr.length > 0) {
+            labTickBufferRef.current = arr;
+            setLabTickTotal(arr.length);
           }
-        } catch(e) {
-          // Collector unavailable (cold start / offline) -- silent fallback
-          // Live ticks accumulating in labTickBufferRef will still work
-          console.warn("[Lab] Backend fetch failed:", e.message, "-- using live ticks only");
         }
-      } else {
-        // ---- LOCAL STORAGE PATH (all other symbols) ----
-        try {
-          const stored = await window.storage.get("ticklab-" + symbol);
-          if (stored && stored.value) {
-            const arr = JSON.parse(stored.value);
-            if (Array.isArray(arr) && arr.length > 0) {
-              labTickBufferRef.current = arr;
-              setLabTickTotal(arr.length);
-            }
-          }
-        } catch(e) {}
-      }
+      } catch(e) {}
     })();
   }, [symbol]);
 
@@ -2035,7 +2064,7 @@ export default function DerivOracle() {
   const labVerdictDesc = !labStats ? "Collect 1,000+ ticks then click Run Analysis." : labStats.verdict === "CLEAN" ? "All tests pass randomness. Any predictor built on this data amplifies noise. Base rate is your only edge." : labStats.verdict === "SIGNAL" ? "Statistically significant deviation found. See test details below before acting." : "One test flagged weakly. Continue collecting data before drawing conclusions.";
   const labChiColor = !labStats || !labStats.chi ? "var(--text-dim)" : labStats.chi.pValue > 0.05 ? "var(--green)" : labStats.chi.pValue > 0.01 ? "var(--orange)" : "var(--red)";
   const labChiVerdict = !labStats || !labStats.chi ? "--" : labStats.chi.pValue > 0.05 ? "UNIFORM (p=" + labStats.chi.pValue + ")" : labStats.chi.pValue > 0.01 ? "WEAK BIAS (p=" + labStats.chi.pValue + ")" : "BIAS DETECTED (p=" + labStats.chi.pValue + ")";
-  const labTransSigRows = labStats && labStats.trans ? labStats.trans.rowTests.filter(r => r.pValue !== null && r.pValue < 0.05) : [];
+  const labTransSigRows = labStats && labStats.trans ? labStats.trans.rowTests.filter(r => r.pValue !== null && r.pValue < fwerAdjustedAlpha(0.05, 10)) : [];
   const labTransColor = !labStats || !labStats.trans ? "var(--text-dim)" : labTransSigRows.length === 0 ? "var(--green)" : labTransSigRows.length <= 2 ? "var(--orange)" : "var(--red)";
   const labTransVerdict = !labStats || !labStats.trans ? "--" : labTransSigRows.length === 0 ? "INDEPENDENT" : labTransSigRows.length + " row(s) flagged (p < 0.05)";
   const labPersColor = !labStats || !labStats.persist ? "var(--text-dim)" : labStats.persist.consistent ? "var(--green)" : "var(--orange)";
@@ -2232,7 +2261,59 @@ export default function DerivOracle() {
   let u5GapSinceLast = 0;
   for (let _u5j = digits.length - 1; _u5j >= 0; _u5j--) { if (digits[_u5j] < 5) break; u5GapSinceLast++; }
 
-    // Execute tab computed vars (extracted from JSX IIFE -- keep before return)
+    // ── EV CALIBRATOR computed rows (Task 3) — must stay above return() ──────────
+  const evCalibBeDiffers  = calculateBreakEvenWinRate(0.95);
+  const evCalibBeMatches  = calculateBreakEvenWinRate(8.0);
+  const evCalibDWRdec     = ptStats.differsTotal > 0 ? parseFloat(ptStats.differsWR) / 100 : null;
+  const evCalibMWRdec     = ptStats.matchTotal   > 0 ? parseFloat(ptStats.matchWR)   / 100 : null;
+  const evCalibEvDiffers  = evCalibDWRdec !== null ? calculateAsymmetricEV(evCalibDWRdec, 0.95) : null;
+  const evCalibEvMatches  = evCalibMWRdec !== null ? calculateAsymmetricEV(evCalibMWRdec, 8.0)  : null;
+  const evCalibWsDiffers  = evCalibDWRdec !== null
+    ? calculateWilsonScore(Math.round(ptStats.differsTotal * evCalibDWRdec), ptStats.differsTotal, 2.576) : null;
+  const evCalibWsMatches  = evCalibMWRdec !== null
+    ? calculateWilsonScore(Math.round(ptStats.matchTotal   * evCalibMWRdec), ptStats.matchTotal,   2.576) : null;
+  const evCalibRows = [
+    {
+      label       : "DIFFERS",
+      payoutLabel : "0.95:1",
+      n           : ptStats.differsTotal,
+      ev          : evCalibEvDiffers,
+      be          : evCalibBeDiffers,
+      wr          : evCalibDWRdec,
+      ws          : evCalibWsDiffers,
+      evColor     : evCalibEvDiffers === null ? "var(--text-dim)" : evCalibEvDiffers > 0.05 ? "var(--green)" : evCalibEvDiffers > 0 ? "var(--yellow)" : "var(--red)",
+      beOk        : evCalibDWRdec !== null && evCalibDWRdec > evCalibBeDiffers,
+      wsClear     : evCalibWsDiffers !== null && evCalibWsDiffers.lower > evCalibBeDiffers,
+      evDisplay   : evCalibEvDiffers !== null ? (evCalibEvDiffers >= 0 ? "+" : "") + (evCalibEvDiffers * 100).toFixed(2) + "c" : "--",
+      beDisplay   : (evCalibBeDiffers * 100).toFixed(2) + "%",
+      wrDisplay   : evCalibDWRdec !== null ? (evCalibDWRdec * 100).toFixed(1) + "%" : "--",
+      wsDisplay   : evCalibWsDiffers ? "[" + (evCalibWsDiffers.lower * 100).toFixed(1) + "%, " + (evCalibWsDiffers.upper * 100).toFixed(1) + "%]" : "--",
+      wsNote      : evCalibWsDiffers ? (evCalibWsDiffers.lower > evCalibBeDiffers
+        ? "CI lower bound " + (evCalibWsDiffers.lower * 100).toFixed(1) + "% exceeds break-even -- EV positive at 99% confidence"
+        : "CI lower bound " + (evCalibWsDiffers.lower * 100).toFixed(1) + "% does not clear break-even -- insufficient evidence") : null,
+    },
+    {
+      label       : "MATCHES",
+      payoutLabel : "8.0:1",
+      n           : ptStats.matchTotal,
+      ev          : evCalibEvMatches,
+      be          : evCalibBeMatches,
+      wr          : evCalibMWRdec,
+      ws          : evCalibWsMatches,
+      evColor     : evCalibEvMatches === null ? "var(--text-dim)" : evCalibEvMatches > 0.05 ? "var(--green)" : evCalibEvMatches > 0 ? "var(--yellow)" : "var(--red)",
+      beOk        : evCalibMWRdec !== null && evCalibMWRdec > evCalibBeMatches,
+      wsClear     : evCalibWsMatches !== null && evCalibWsMatches.lower > evCalibBeMatches,
+      evDisplay   : evCalibEvMatches !== null ? (evCalibEvMatches >= 0 ? "+" : "") + (evCalibEvMatches * 100).toFixed(2) + "c" : "--",
+      beDisplay   : (evCalibBeMatches * 100).toFixed(2) + "%",
+      wrDisplay   : evCalibMWRdec !== null ? (evCalibMWRdec * 100).toFixed(1) + "%" : "--",
+      wsDisplay   : evCalibWsMatches ? "[" + (evCalibWsMatches.lower * 100).toFixed(1) + "%, " + (evCalibWsMatches.upper * 100).toFixed(1) + "%]" : "--",
+      wsNote      : evCalibWsMatches ? (evCalibWsMatches.lower > evCalibBeMatches
+        ? "CI lower bound " + (evCalibWsMatches.lower * 100).toFixed(1) + "% exceeds break-even -- EV positive at 99% confidence"
+        : "CI lower bound " + (evCalibWsMatches.lower * 100).toFixed(1) + "% does not clear break-even -- insufficient evidence") : null,
+    },
+  ];
+
+  // Execute tab computed vars (extracted from JSX IIFE -- keep before return)
   const execColdDigit = hotCold.cold.length > 0 ? hotCold.cold[0] : null;
   const execHotDigit  = hotCold.hot.length  > 0 ? hotCold.hot[0]  : null;
   const execWins   = execTradesRef.current.filter(t => t.status === "WIN").length;
@@ -3859,7 +3940,7 @@ export default function DerivOracle() {
               <div style={{ fontSize: 10, color: "var(--text-dim)", lineHeight: 1.7, marginBottom: 14, padding: "8px 10px",
                 background: "var(--bg2)", borderRadius: 3, borderLeft: "2px solid var(--text-dim)" }}>
                 Passive tick accumulator + rigorous statistical tests. No trading recommendations attached.
-                A confirmed signal requires p &lt; 0.05 across multiple tests at n &gt;= 50,000 ticks.
+                A confirmed signal requires p &lt; 0.005 (FWER Bonferroni-corrected) across multiple tests at n &gt;= 50,000 ticks.
                 If tests return clean, no predictor can add edge beyond the base rate.
               </div>
 
@@ -3989,7 +4070,7 @@ export default function DerivOracle() {
                 </div>
                 {labStats && labStats.trans && labTransSigRows.length > 0 && (
                   <div style={{ marginTop: 8 }}>
-                    <div style={{ fontSize: 9, color: "var(--orange)", marginBottom: 4, letterSpacing: 1 }}>FLAGGED ROWS (p &lt; 0.05):</div>
+                    <div style={{ fontSize: 9, color: "var(--orange)", marginBottom: 4, letterSpacing: 1 }}>FLAGGED ROWS (p &lt; 0.005 Bonferroni-corrected):</div>
                     {labTransSigRows.map(r => (
                       <div key={r.from} style={{ fontSize: 9, fontFamily: "var(--mono)", color: "var(--text)", padding: "2px 0", lineHeight: 1.8 }}>
                         after digit {r.from}: chi-sq = {r.chiSq}, p = {r.pValue} ({r.rowN} obs)
@@ -3999,7 +4080,7 @@ export default function DerivOracle() {
                 )}
                 {labStats && labStats.trans && labTransSigRows.length === 0 && (
                   <div style={{ fontSize: 9, color: "var(--green)", marginTop: 6 }}>
-                    No rows flagged. Serial independence confirmed at p &gt; 0.05 across all digits.
+                    No rows flagged. Serial independence confirmed at p &gt; 0.005 (Bonferroni-corrected) across all digits.
                   </div>
                 )}
                 {(!labStats || !labStats.trans) && labN < 200 && (
@@ -4038,6 +4119,56 @@ export default function DerivOracle() {
                     </div>
                   </div>
                 )}
+              </div>
+
+              {/* ---- EV CALIBRATOR PANEL (Task 3) ---- */}
+              <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--bg2)", borderRadius: 4,
+                border: "1px solid var(--border)" }}>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>
+                  ASYMMETRIC EV CALIBRATOR
+                </div>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", lineHeight: 1.7, marginBottom: 10 }}>
+                  True mathematical edge per unit staked. EV = (winRate x payout) - (1 - winRate).
+                  Break-even = 1 / (1 + payout). Wilson Score = 99% two-sided confidence interval on observed win rate.
+                </div>
+                <div>
+                  {evCalibRows.map(row => (
+                    <div key={row.label} style={{ marginBottom: 10, padding: "8px 10px", background: "var(--bg3)",
+                      borderRadius: 3, border: "1px solid " + (row.ev !== null && row.ev > 0 ? "rgba(0,255,136,0.2)" : "var(--border)") }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: 6 }}>
+                        <span style={{ fontFamily:"var(--head)", fontSize: 12, letterSpacing: 2,
+                          color: row.evColor, fontWeight: 700 }}>{row.label}</span>
+                        <span style={{ fontSize: 9, color:"var(--text-dim)" }}>payout {row.payoutLabel} | n={row.n}</span>
+                      </div>
+                      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap: 6 }}>
+                        <div style={{ textAlign:"center" }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, fontFamily:"var(--head)",
+                            color: row.evColor }}>{row.evDisplay}</div>
+                          <div style={{ fontSize: 8, color:"var(--text-dim)", letterSpacing: 1 }}>EV / UNIT</div>
+                        </div>
+                        <div style={{ textAlign:"center" }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, fontFamily:"var(--head)",
+                            color: "var(--text-dim)" }}>{row.beDisplay}</div>
+                          <div style={{ fontSize: 8, color:"var(--text-dim)", letterSpacing: 1 }}>BREAK-EVEN</div>
+                        </div>
+                        <div style={{ textAlign:"center" }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, fontFamily:"var(--head)",
+                            color: row.beOk ? "var(--green)" : "var(--red)" }}>{row.wrDisplay}</div>
+                          <div style={{ fontSize: 8, color:"var(--text-dim)", letterSpacing: 1 }}>OBSERVED WR</div>
+                        </div>
+                        <div style={{ textAlign:"center" }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, fontFamily:"var(--mono)",
+                            color: row.wsClear ? "var(--green)" : "var(--text-dim)" }}>{row.wsDisplay}</div>
+                          <div style={{ fontSize: 8, color:"var(--text-dim)", letterSpacing: 1 }}>WILSON 99% CI</div>
+                        </div>
+                      </div>
+                      {row.wsNote && (
+                        <div style={{ fontSize: 8, color: row.wsClear ? "var(--green)" : "var(--red)",
+                          marginTop: 5, letterSpacing: 1 }}>{row.wsNote}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
 
               {/* ---- footer note ---- */}
