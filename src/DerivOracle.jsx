@@ -414,11 +414,9 @@ function labRunPersistence(digitArr) {
   const drift = t1 && t2 ? parseFloat(Math.abs(t1.chiSq - t2.chiSq).toFixed(3)) : null;
   return { t1, t2, drift, consistent: drift !== null && drift < 8 };
 }
-function labComputeVerdict(chi, trans, persist) {
+function labComputeVerdict(chi, trans, persist, runs) {
   if (!chi) return null;
   // Task 4: FWER-corrected thresholds
-  // Chi-square: single test — use Bonferroni for 1 test = 0.005 (conservative)
-  // Transition matrix: 10 simultaneous row tests — adjusted alpha = 0.05/10 = 0.005
   const chiAlpha   = fwerAdjustedAlpha(0.05, 10);  // 0.005
   const transAlpha = fwerAdjustedAlpha(0.05, 10);  // 0.005
   let flags = 0;
@@ -428,6 +426,8 @@ function labComputeVerdict(chi, trans, persist) {
     if (sig.length >= 2) flags++;
   }
   if (persist && !persist.consistent) flags++;
+  // Task 5: Wald-Wolfowitz — single test, alpha = 0.05 (no family-size penalty)
+  if (runs && runs.pValue !== null && runs.pValue < fwerAdjustedAlpha(0.05, 1)) flags++;
   if (flags === 0) return "CLEAN";
   if (flags === 1) return "MARGINAL";
   return "SIGNAL";
@@ -484,6 +484,73 @@ function calculateWilsonScore(wins, trials, z) {
 function fwerAdjustedAlpha(baseAlpha, testCount) {
   if (testCount <= 0) return baseAlpha;
   return parseFloat((baseAlpha / testCount).toFixed(8));
+}
+
+// ── TASK 5: WALD-WOLFOWITZ RUNS TEST ─────────────────────────────────────────
+// runWaldWolfowitz(digits)
+// Spec: ORACLE_BUILD_SPEC.md Section 3
+// Binary vector: 1 if D_t > 4.5, else 0  (i.e. digits 5-9 = 1, digits 0-4 = 0)
+// Counts contiguous runs R, computes expected mu_R and sigma_R^2, Z-score and p.
+// Returns null when n < 20 (insufficient data).
+function normalCDF(z) {
+  // Abramowitz & Stegun approximation — max error 7.5e-8
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989423 * Math.exp(-z * z / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.7814779 + t * (-1.8212560 + t * 1.3302744))));
+  return z >= 0 ? 1 - p : p;
+}
+
+function runWaldWolfowitz(digits) {
+  const n = digits.length;
+  if (n < 20) return null;
+
+  // Step 1 — binarise: 1 if digit > 4 (i.e. >= 5), else 0
+  const binary = digits.map(d => (d > 4 ? 1 : 0));
+
+  // Step 2 — count n1 (ones) and n2 (zeros)
+  let n1 = 0;
+  for (let i = 0; i < n; i++) n1 += binary[i];
+  const n2 = n - n1;
+
+  // Edge case: all same value — variance would be 0
+  if (n1 === 0 || n2 === 0) {
+    return { n, n1, n2, runs: 1, muR: 1, sigmaR: 0, z: null, pValue: null,
+      verdict: "DEGENERATE", note: "All digits on one side of median — test inapplicable." };
+  }
+
+  // Step 3 — count runs R (contiguous blocks of identical binary value)
+  let R = 1;
+  for (let i = 1; i < n; i++) {
+    if (binary[i] !== binary[i - 1]) R++;
+  }
+
+  // Step 4 — expected mean and variance of R under null (independence)
+  const muR     = (2 * n1 * n2) / (n1 + n2) + 1;
+  const sigmaR2 = (2 * n1 * n2 * (2 * n1 * n2 - n1 - n2))
+                  / (Math.pow(n1 + n2, 2) * (n1 + n2 - 1));
+  const sigmaR  = Math.sqrt(Math.max(sigmaR2, 1e-12)); // epsilon guard per spec
+
+  // Step 5 — Z-score (continuity correction optional — not in spec, omit)
+  const Z = (R - muR) / sigmaR;
+
+  // Step 6 — two-tailed p-value from standard normal CDF
+  const pValue = parseFloat((2 * Math.min(normalCDF(Z), 1 - normalCDF(Z))).toFixed(8));
+  const alpha  = fwerAdjustedAlpha(0.05, 1); // single test — no multi-comparison penalty
+
+  const verdict = pValue < alpha ? "SIGNAL" : "INDEPENDENT";
+
+  return {
+    n, n1, n2, runs: R,
+    muR    : parseFloat(muR.toFixed(4)),
+    sigmaR : parseFloat(sigmaR.toFixed(4)),
+    z      : parseFloat(Z.toFixed(4)),
+    pValue,
+    alpha,
+    verdict,
+    note: verdict === "SIGNAL"
+      ? "Non-random run structure detected (p=" + pValue + "). Possible mean-reversion or trend clustering."
+      : "Run count consistent with serial independence (p=" + pValue + ").",
+  };
 }
 
 // ---- END LAB STATISTICS ENGINE ------------------------------------------
@@ -1959,11 +2026,12 @@ export default function DerivOracle() {
     setLabRunning(true);
     setTimeout(() => {
       try {
-        const chi = labRunChiSquare(buf);
-        const trans = buf.length >= 200 ? labBuildTransMatrix(buf) : null;
-        const persist = buf.length >= 5000 ? labRunPersistence(buf) : null;
-        const verdict = labComputeVerdict(chi, trans, persist);
-        setLabStats({ chi, trans, persist, verdict, n: buf.length, ts: Date.now() });
+        const chi      = labRunChiSquare(buf);
+        const trans    = buf.length >= 200  ? labBuildTransMatrix(buf) : null;
+        const persist  = buf.length >= 5000 ? labRunPersistence(buf)   : null;
+        const runs     = buf.length >= 20   ? runWaldWolfowitz(buf)     : null;
+        const verdict  = labComputeVerdict(chi, trans, persist, runs);
+        setLabStats({ chi, trans, persist, runs, verdict, n: buf.length, ts: Date.now() });
       } catch(e) {}
       setLabRunning(false);
     }, 50);
@@ -2103,6 +2171,16 @@ export default function DerivOracle() {
   const labPersColor = !labStats || !labStats.persist ? "var(--text-dim)" : labStats.persist.consistent ? "var(--green)" : "var(--orange)";
   const labPersVerdict = !labStats || !labStats.persist ? "--" : labStats.persist.consistent ? "CONSISTENT (drift=" + labStats.persist.drift + ")" : "INCONSISTENT (drift=" + labStats.persist.drift + ")";
   const labLastTs = labStats ? new Date(labStats.ts).toLocaleTimeString() : "never";
+  // Task 5 — Wald-Wolfowitz computed display vars
+  const labRunsResult  = labStats && labStats.runs ? labStats.runs : null;
+  const labRunsColor   = !labRunsResult ? "var(--text-dim)"
+    : labRunsResult.verdict === "INDEPENDENT" ? "var(--green)"
+    : labRunsResult.verdict === "SIGNAL"      ? "var(--red)"
+    : "var(--orange)";
+  const labRunsVerdict = !labRunsResult ? "--"
+    : labRunsResult.verdict === "DEGENERATE" ? "DEGENERATE"
+    : labRunsResult.verdict + " (p=" + labRunsResult.pValue + ")";
+  const labRunsUnlock  = labN >= 20;
   const labFreqBars = labStats && labStats.chi ? labStats.chi.freq.map((count, d) => {
     const pct = parseFloat(((count / labStats.chi.n) * 100).toFixed(1));
     const dev = parseFloat((pct - 10.0).toFixed(1));
@@ -4151,6 +4229,45 @@ export default function DerivOracle() {
                       drift = {labStats.persist.drift} -- {labStats.persist.consistent ? "consistent across halves" : "patterns differ between halves -- likely noise"}
                     </div>
                   </div>
+                )}
+              </div>
+
+              {/* ---- TEST 4: WALD-WOLFOWITZ RUNS TEST (Task 5) ---- */}
+              <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--bg2)", borderRadius: 4 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, textTransform: "uppercase" }}>
+                    TEST 4 -- WALD-WOLFOWITZ RUNS TEST
+                  </div>
+                  {labRunsUnlock ? (
+                    <span style={{ fontSize: 9, color: labRunsColor, fontFamily: "var(--mono)", letterSpacing: 1 }}>{labRunsVerdict}</span>
+                  ) : (
+                    <span style={{ fontSize: 9, color: "var(--text-dim)" }}>need 20 ticks</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", lineHeight: 1.7, marginBottom: 8 }}>
+                  Tests the sequential arrangement of binary states (digit &gt; 4 vs digit &lt;= 4) for global mean-reversion
+                  or trend clustering. Too few runs = clustering. Too many runs = mean-reversion.
+                  Single test -- no Bonferroni penalty applied.
+                </div>
+                {labRunsResult && labRunsResult.verdict !== "DEGENERATE" && (
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 9, lineHeight: 2, marginBottom: 8 }}>
+                    <div style={{ color: "var(--text)" }}>
+                      n={labRunsResult.n.toLocaleString()} | n1 (digit 5-9)={labRunsResult.n1.toLocaleString()} | n2 (digit 0-4)={labRunsResult.n2.toLocaleString()}
+                    </div>
+                    <div style={{ color: "var(--text)" }}>
+                      observed runs R={labRunsResult.runs.toLocaleString()} | expected mu_R={labRunsResult.muR} | sigma_R={labRunsResult.sigmaR}
+                    </div>
+                    <div style={{ color: "var(--text)" }}>
+                      Z={labRunsResult.z} | p={labRunsResult.pValue} | alpha={labRunsResult.alpha}
+                    </div>
+                    <div style={{ color: labRunsColor, marginTop: 4 }}>{labRunsResult.note}</div>
+                  </div>
+                )}
+                {labRunsResult && labRunsResult.verdict === "DEGENERATE" && (
+                  <div style={{ fontSize: 9, color: "var(--orange)", marginTop: 6 }}>{labRunsResult.note}</div>
+                )}
+                {!labRunsResult && labRunsUnlock && (
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", marginTop: 6 }}>Run Analysis to compute.</div>
                 )}
               </div>
 
