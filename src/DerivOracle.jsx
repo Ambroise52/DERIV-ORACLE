@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  CartesianGrid, Area, AreaChart, Cell
+  CartesianGrid, Area, AreaChart, Cell, ReferenceLine
 } from "recharts";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
@@ -414,7 +414,7 @@ function labRunPersistence(digitArr) {
   const drift = t1 && t2 ? parseFloat(Math.abs(t1.chiSq - t2.chiSq).toFixed(3)) : null;
   return { t1, t2, drift, consistent: drift !== null && drift < 8 };
 }
-function labComputeVerdict(chi, trans, persist, runs) {
+function labComputeVerdict(chi, trans, persist, runs, acf, entropy) {
   if (!chi) return null;
   // Task 4: FWER-corrected thresholds
   const chiAlpha   = fwerAdjustedAlpha(0.05, 10);  // 0.005
@@ -426,8 +426,12 @@ function labComputeVerdict(chi, trans, persist, runs) {
     if (sig.length >= 2) flags++;
   }
   if (persist && !persist.consistent) flags++;
-  // Task 5: Wald-Wolfowitz — single test, alpha = 0.05 (no family-size penalty)
+  // Task 5: Wald-Wolfowitz — single test, alpha = 0.05
   if (runs && runs.pValue !== null && runs.pValue < fwerAdjustedAlpha(0.05, 1)) flags++;
+  // Task 6: ACF — flagged lags breaching Bartlett 99% hurdle (3+ = signal)
+  if (acf && acf.verdict === "SIGNAL") flags++;
+  // Task 7: Shannon Entropy — persistent low-entropy blocks (4+ = signal)
+  if (entropy && entropy.verdict === "DRIFT_DETECTED") flags++;
   if (flags === 0) return "CLEAN";
   if (flags === 1) return "MARGINAL";
   return "SIGNAL";
@@ -550,6 +554,107 @@ function runWaldWolfowitz(digits) {
     note: verdict === "SIGNAL"
       ? "Non-random run structure detected (p=" + pValue + "). Possible mean-reversion or trend clustering."
       : "Run count consistent with serial independence (p=" + pValue + ").",
+  };
+}
+
+// ── TASK 6: AUTOCORRELATION FUNCTION (ACF) ───────────────────────────────────
+// runACF(digits, maxLag)
+// Spec: ORACLE_BUILD_SPEC.md Section 4
+// Centres digits at 4.5 (midpoint of 0-9), computes rho_k for k=1..maxLag.
+// Significance hurdle (Bartlett 99%): +/- 2.576 / sqrt(N)
+// Single O(N*K) pass — no allocations inside the lag loop.
+function runACF(digits, maxLag) {
+  const N = digits.length;
+  if (N < maxLag + 2) return null;
+
+  // Centre: y_t = D_t - 4.5
+  const y    = new Float64Array(N);
+  let   yBar = 0;
+  for (let i = 0; i < N; i++) { y[i] = digits[i] - 4.5; yBar += y[i]; }
+  yBar /= N;
+
+  // Denominator: sum of (y_t - yBar)^2 over all t
+  let denom = 0;
+  for (let i = 0; i < N; i++) denom += (y[i] - yBar) * (y[i] - yBar);
+  if (denom < 1e-12) return null; // epsilon guard — degenerate constant series
+
+  // rho_k for each lag
+  const lags = [];
+  for (let k = 1; k <= maxLag; k++) {
+    let num = 0;
+    for (let t = 0; t < N - k; t++) num += (y[t] - yBar) * (y[t + k] - yBar);
+    const rho = parseFloat((num / denom).toFixed(6));
+    lags.push({ k, rho });
+  }
+
+  // Bartlett 99% significance hurdle: +/- 2.576 / sqrt(N)
+  const hurdle    = parseFloat((2.576 / Math.sqrt(N)).toFixed(6));
+  // FWER: 20 simultaneous lags — adjusted alpha for labelling
+  const fwerHurdle = parseFloat((2.576 / Math.sqrt(N) * Math.sqrt(fwerAdjustedAlpha(0.05, 20) / 0.005)).toFixed(6));
+
+  // Flag lags that breach the Bartlett 99% hurdle
+  const flagged = lags.filter(l => Math.abs(l.rho) > hurdle);
+
+  return {
+    N, maxLag, lags, hurdle, fwerHurdle,
+    flaggedCount : flagged.length,
+    flagged,
+    verdict      : flagged.length === 0 ? "INDEPENDENT" : flagged.length <= 2 ? "MARGINAL" : "SIGNAL",
+  };
+}
+
+// ── TASK 7: SHANNON ENTROPY DRIFT ────────────────────────────────────────────
+// calculateShannonEntropyDrift(digits, blockSize)
+// Spec: ORACLE_BUILD_SPEC.md Section 5
+// Splits digits into sequential blocks of blockSize, computes H per block.
+// H = -sum(p_i * log2(p_i)) for i=0..9
+// Edge case: p_i = 0 -> 0 (not -Inf) per spec.
+// Maximum uniform entropy for 10 equiprobable digits: log2(10) = 3.32193 bits.
+const ACF_MAX_ENTROPY = parseFloat(Math.log2(10).toFixed(5)); // 3.32193
+
+function calculateShannonEntropyDrift(digits, blockSize) {
+  const N      = digits.length;
+  const B      = blockSize || 100;
+  if (N < B) return null;
+
+  const blocks  = Math.floor(N / B);
+  const entropy = [];
+
+  for (let b = 0; b < blocks; b++) {
+    const freq = new Array(10).fill(0);
+    const start = b * B;
+    for (let i = start; i < start + B; i++) freq[digits[i]]++;
+
+    let H = 0;
+    for (let d = 0; d < 10; d++) {
+      if (freq[d] === 0) continue; // 0 * log2(0) = 0 per spec edge case
+      const p = freq[d] / B;
+      H -= p * Math.log2(p);
+    }
+    entropy.push({
+      block    : b + 1,
+      startIdx : b * B,
+      H        : parseFloat(H.toFixed(5)),
+    });
+  }
+
+  // Summary stats
+  const hValues  = entropy.map(e => e.H);
+  const hMean    = parseFloat((hValues.reduce((s, h) => s + h, 0) / hValues.length).toFixed(5));
+  const hMin     = parseFloat(Math.min(...hValues).toFixed(5));
+  const hMax     = parseFloat(Math.max(...hValues).toFixed(5));
+  // Low-entropy blocks: H < 3.0 bits (drops below ~91% of max uniform)
+  const lowBlocks = entropy.filter(e => e.H < 3.0);
+
+  return {
+    N, blockSize: B, blocks: blocks,
+    entropy,         // full array for chart
+    hMean, hMin, hMax,
+    maxEntropy   : ACF_MAX_ENTROPY,
+    lowBlocks    : lowBlocks.length,
+    verdict      : lowBlocks.length === 0 ? "STABLE"
+                 : lowBlocks.length <= 3  ? "MARGINAL"
+                 : "DRIFT_DETECTED",
   };
 }
 
@@ -2027,11 +2132,13 @@ export default function DerivOracle() {
     setTimeout(() => {
       try {
         const chi      = labRunChiSquare(buf);
-        const trans    = buf.length >= 200  ? labBuildTransMatrix(buf) : null;
-        const persist  = buf.length >= 5000 ? labRunPersistence(buf)   : null;
-        const runs     = buf.length >= 20   ? runWaldWolfowitz(buf)     : null;
-        const verdict  = labComputeVerdict(chi, trans, persist, runs);
-        setLabStats({ chi, trans, persist, runs, verdict, n: buf.length, ts: Date.now() });
+        const trans    = buf.length >= 200  ? labBuildTransMatrix(buf)              : null;
+        const persist  = buf.length >= 5000 ? labRunPersistence(buf)                : null;
+        const runs     = buf.length >= 20   ? runWaldWolfowitz(buf)                 : null;
+        const acf      = buf.length >= 50   ? runACF(buf, 20)                       : null;
+        const entropy  = buf.length >= 100  ? calculateShannonEntropyDrift(buf, 100): null;
+        const verdict  = labComputeVerdict(chi, trans, persist, runs, acf, entropy);
+        setLabStats({ chi, trans, persist, runs, acf, entropy, verdict, n: buf.length, ts: Date.now() });
       } catch(e) {}
       setLabRunning(false);
     }, 50);
@@ -2181,6 +2288,41 @@ export default function DerivOracle() {
     : labRunsResult.verdict === "DEGENERATE" ? "DEGENERATE"
     : labRunsResult.verdict + " (p=" + labRunsResult.pValue + ")";
   const labRunsUnlock  = labN >= 20;
+
+  // Task 6 — ACF computed display vars
+  const labAcfResult   = labStats && labStats.acf ? labStats.acf : null;
+  const labAcfColor    = !labAcfResult ? "var(--text-dim)"
+    : labAcfResult.verdict === "INDEPENDENT" ? "var(--green)"
+    : labAcfResult.verdict === "MARGINAL"    ? "var(--orange)"
+    : "var(--red)";
+  const labAcfVerdict  = !labAcfResult ? "--"
+    : labAcfResult.verdict + " (" + labAcfResult.flaggedCount + " lag(s) flagged)";
+  const labAcfUnlock   = labN >= 50;
+  // Build chart data — each lag as a bar, colour by significance
+  const labAcfChartData = labAcfResult ? labAcfResult.lags.map(l => ({
+    k      : "k" + l.k,
+    rho    : parseFloat(l.rho.toFixed(4)),
+    absRho : Math.abs(l.rho),
+    fill   : Math.abs(l.rho) > labAcfResult.hurdle ? "var(--red)" : "var(--green)",
+  })) : [];
+  const labAcfHurdle   = labAcfResult ? labAcfResult.hurdle : 0;
+
+  // Task 7 — Shannon Entropy computed display vars
+  const labEntResult   = labStats && labStats.entropy ? labStats.entropy : null;
+  const labEntColor    = !labEntResult ? "var(--text-dim)"
+    : labEntResult.verdict === "STABLE"         ? "var(--green)"
+    : labEntResult.verdict === "MARGINAL"        ? "var(--orange)"
+    : "var(--red)";
+  const labEntVerdict  = !labEntResult ? "--"
+    : labEntResult.verdict + " (mean H=" + labEntResult.hMean + ")";
+  const labEntUnlock   = labN >= 100;
+  // Build chart data for entropy drift line chart
+  const labEntChartData = labEntResult ? labEntResult.entropy.map(e => ({
+    block  : e.block,
+    H      : e.H,
+    maxH   : ACF_MAX_ENTROPY,
+  })) : [];
+
   const labFreqBars = labStats && labStats.chi ? labStats.chi.freq.map((count, d) => {
     const pct = parseFloat(((count / labStats.chi.n) * 100).toFixed(1));
     const dev = parseFloat((pct - 10.0).toFixed(1));
@@ -4267,6 +4409,124 @@ export default function DerivOracle() {
                   <div style={{ fontSize: 9, color: "var(--orange)", marginTop: 6 }}>{labRunsResult.note}</div>
                 )}
                 {!labRunsResult && labRunsUnlock && (
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", marginTop: 6 }}>Run Analysis to compute.</div>
+                )}
+              </div>
+
+              {/* ---- TEST 5: ACF CORRELOGRAM (Task 6) ---- */}
+              <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--bg2)", borderRadius: 4 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, textTransform: "uppercase" }}>
+                    TEST 5 -- ACF CORRELOGRAM (lags k=1..20)
+                  </div>
+                  {labAcfUnlock ? (
+                    <span style={{ fontSize: 9, color: labAcfColor, fontFamily: "var(--mono)", letterSpacing: 1 }}>{labAcfVerdict}</span>
+                  ) : (
+                    <span style={{ fontSize: 9, color: "var(--text-dim)" }}>need 50 ticks</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", lineHeight: 1.7, marginBottom: 8 }}>
+                  Measures linear dependencies at lags k=1 to 20. Detects multi-tick memory the Markov matrix misses.
+                  Red bars breach the Bartlett 99% significance hurdle (+/- 2.576/sqrt(N)).
+                </div>
+                {labAcfResult && (
+                  <>
+                    <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--text-dim)", marginBottom: 8 }}>
+                      n={labAcfResult.N.toLocaleString()} | hurdle={labAcfResult.hurdle} | flagged={labAcfResult.flaggedCount} lag(s)
+                    </div>
+                    <ResponsiveContainer width="100%" height={140}>
+                      <BarChart data={labAcfChartData} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1a1a2e" />
+                        <XAxis dataKey="k" tick={{ fill: "#4a5260", fontSize: 8 }} />
+                        <YAxis domain={[-0.05, 0.05]} tick={{ fill: "#4a5260", fontSize: 8 }} tickFormatter={v => v.toFixed(3)} width={42} />
+                        <Tooltip contentStyle={{ background: "#0c0c18", border: "1px solid #1e1e38", fontSize: 10 }}
+                          formatter={(v, n) => [v.toFixed(4), "rho"]} />
+                        <Bar dataKey="rho" radius={[2, 2, 0, 0]} isAnimationActive={false}>
+                          {labAcfChartData.map((entry, i) => (
+                            <Cell key={i} fill={entry.fill} />
+                          ))}
+                        </Bar>
+                        {/* Bartlett 99% significance hurdle lines */}
+                        <ReferenceLine y={labAcfHurdle}  stroke="var(--red)" strokeDasharray="4 4" strokeWidth={1} />
+                        <ReferenceLine y={-labAcfHurdle} stroke="var(--red)" strokeDasharray="4 4" strokeWidth={1} />
+                        <ReferenceLine y={0}             stroke="#2a2a48"    strokeWidth={1} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                    {labAcfResult.flaggedCount > 0 && (
+                      <div style={{ fontSize: 9, color: "var(--red)", marginTop: 6, letterSpacing: 1 }}>
+                        FLAGGED: {labAcfResult.flagged.map(l => "k=" + l.k + " (rho=" + l.rho + ")").join(" | ")}
+                      </div>
+                    )}
+                    {labAcfResult.flaggedCount === 0 && (
+                      <div style={{ fontSize: 9, color: "var(--green)", marginTop: 6 }}>
+                        No lags breach the Bartlett 99% hurdle. Serial independence confirmed at all lags 1-20.
+                      </div>
+                    )}
+                  </>
+                )}
+                {!labAcfResult && labAcfUnlock && (
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", marginTop: 6 }}>Run Analysis to compute.</div>
+                )}
+              </div>
+
+              {/* ---- TEST 6: SHANNON ENTROPY DRIFT (Task 7) ---- */}
+              <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--bg2)", borderRadius: 4 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, textTransform: "uppercase" }}>
+                    TEST 6 -- SHANNON ENTROPY DRIFT (block size=100)
+                  </div>
+                  {labEntUnlock ? (
+                    <span style={{ fontSize: 9, color: labEntColor, fontFamily: "var(--mono)", letterSpacing: 1 }}>{labEntVerdict}</span>
+                  ) : (
+                    <span style={{ fontSize: 9, color: "var(--text-dim)" }}>need 100 ticks</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", lineHeight: 1.7, marginBottom: 8 }}>
+                  Information density per 100-tick block. H = 3.3219 bits = maximum uniform entropy (all digits equally likely).
+                  Persistent dips below 3.0 bits indicate windows where randomness temporarily drops.
+                </div>
+                {labEntResult && (
+                  <>
+                    <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--text-dim)", marginBottom: 8 }}>
+                      {labEntResult.blocks} blocks | mean H={labEntResult.hMean} | min={labEntResult.hMin} | max={labEntResult.hMax} | low blocks (H&lt;3.0)={labEntResult.lowBlocks}
+                    </div>
+                    <ResponsiveContainer width="100%" height={130}>
+                      <AreaChart data={labEntChartData} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+                        <defs>
+                          <linearGradient id="gEnt" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%"  stopColor="#00bfff" stopOpacity={0.2} />
+                            <stop offset="95%" stopColor="#00bfff" stopOpacity={0}   />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1a1a2e" />
+                        <XAxis dataKey="block" tick={{ fill: "#4a5260", fontSize: 8 }}
+                          label={{ value: "block", position: "insideBottomRight", fill: "#4a5260", fontSize: 8 }} />
+                        <YAxis domain={[2.8, 3.4]} tick={{ fill: "#4a5260", fontSize: 8 }}
+                          tickFormatter={v => v.toFixed(2)} width={36} />
+                        <Tooltip contentStyle={{ background: "#0c0c18", border: "1px solid #1e1e38", fontSize: 10 }}
+                          formatter={(v) => [v.toFixed(4) + " bits", "H"]} />
+                        <Area type="monotone" dataKey="H" stroke="var(--cyan)" strokeWidth={1.5}
+                          fill="url(#gEnt)" dot={false} isAnimationActive={false} />
+                        {/* Maximum uniform entropy ceiling */}
+                        <ReferenceLine y={ACF_MAX_ENTROPY} stroke="var(--green)"
+                          strokeDasharray="4 4" strokeWidth={1}
+                          label={{ value: "max " + ACF_MAX_ENTROPY, fill: "var(--green)", fontSize: 8, position: "insideTopRight" }} />
+                        {/* Low-entropy warning floor */}
+                        <ReferenceLine y={3.0} stroke="var(--orange)"
+                          strokeDasharray="4 4" strokeWidth={1}
+                          label={{ value: "3.0 floor", fill: "var(--orange)", fontSize: 8, position: "insideBottomRight" }} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                    <div style={{ fontSize: 9, color: labEntColor, marginTop: 6 }}>
+                      {labEntResult.verdict === "STABLE"
+                        ? "Entropy stable across all blocks. No predictable low-randomness windows detected."
+                        : labEntResult.verdict === "MARGINAL"
+                        ? labEntResult.lowBlocks + " block(s) below 3.0 bits. Monitor but not conclusive."
+                        : labEntResult.lowBlocks + " blocks below 3.0 bits — persistent entropy drift detected."}
+                    </div>
+                  </>
+                )}
+                {!labEntResult && labEntUnlock && (
                   <div style={{ fontSize: 9, color: "var(--text-dim)", marginTop: 6 }}>Run Analysis to compute.</div>
                 )}
               </div>
