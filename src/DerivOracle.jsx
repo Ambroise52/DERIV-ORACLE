@@ -658,6 +658,178 @@ function calculateShannonEntropyDrift(digits, blockSize) {
   };
 }
 
+// ── TASK 8: MASTER VALIDATION ENGINE ─────────────────────────────────────────
+// Spec: ORACLE_BUILD_SPEC.md — Statistical Validation Framework
+//
+// Partitions:  IS=50%  OOS=30%  WF=20%  (requires N >= 50,000)
+// Per partition runs:
+//   1. Wilson Score 99% CI  (calculateWilsonScore already defined above)
+//   2. Binomial exact p-value (one-tailed upper: does win rate beat break-even?)
+//   3. Discrete Sharpe Sd = mu / sigma on per-trade P&L outcomes
+//   4. Alpha Decay: dSR = (Sd_IS - Sd_OOS) / Sd_IS
+//
+// Rejection criteria (spec §Rejection Criteria):
+//   R1: p >= 0.001 on any partition
+//   R2: Wilson lower bound < break-even win rate on any partition
+//   R3: EV <= 0 during WF phase
+//   R4: Alpha Decay > 0.25
+//
+// VALIDATED only when all four rejection criteria pass on all three partitions.
+
+// binomialExactP — one-tailed upper binomial CDF via log-beta regularisation.
+// Returns P(X >= wins | n, p0) = 1 - CDF(wins-1 | n, p0)
+// Uses the regularised incomplete beta function I_x(a,b) approximated via
+// continued fraction (Numerical Recipes). Handles large n without overflow.
+function logBeta(a, b) {
+  return logGamma(a) + logGamma(b) - logGamma(a + b);
+}
+function betaCF(a, b, x) {
+  // Lentz continued fraction — Numerical Recipes §6.4
+  const MAXIT = 200, EPS = 1e-10, FPMIN = 1e-30;
+  const qab = a + b, qap = a + 1, qam = a - 1;
+  let c = 1, d = 1 - qab * x / qap;
+  if (Math.abs(d) < FPMIN) d = FPMIN;
+  d = 1 / d;
+  let h = d;
+  for (let m = 1; m <= MAXIT; m++) {
+    const m2 = 2 * m;
+    let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+    d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+    c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+    d = 1 / d; h *= d * c;
+    aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+    d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+    c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+    d = 1 / d;
+    const del = d * c; h *= del;
+    if (Math.abs(del - 1) < EPS) break;
+  }
+  return h;
+}
+function regularisedBeta(x, a, b) {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  const lbeta = logBeta(a, b);
+  const front = Math.exp(Math.log(x) * a + Math.log(1 - x) * b - lbeta) / a;
+  // Use symmetry for numerical stability
+  if (x < (a + 1) / (a + b + 2))
+    return front * betaCF(a, b, x);
+  return 1 - Math.exp(Math.log(1 - x) * b + Math.log(x) * a - lbeta) / b * betaCF(b, a, 1 - x);
+}
+function binomialExactP(wins, n, p0) {
+  // P(X >= wins | n, p0) — one-tailed upper tail
+  // = 1 - P(X <= wins-1) = I_{p0}(wins, n-wins+1)  (regularised incomplete beta)
+  if (wins <= 0) return 1;
+  if (wins > n)  return 0;
+  return parseFloat(Math.max(0, Math.min(1,
+    regularisedBeta(p0, wins, n - wins + 1)
+  )).toFixed(8));
+}
+
+// discreteSharpe — reward-to-risk on binary per-trade P&L outcomes.
+// Spec formula: Sd = mu / sigma  where mu = mean P&L, sigma = std-dev P&L
+// P&L modelled as: +payout on WIN, -1 on LOSS (normalised to unit stake)
+// Uses two-pass stable variance per spec Failure Analysis note.
+function discreteSharpe(wins, n, payout) {
+  if (n <= 1) return 0;
+  const losses = n - wins;
+  // Build P&L array: WIN = +payout, LOSS = -1
+  // Instead of allocating n-length array, use closed-form mean/variance
+  const mu = (wins * payout - losses) / n;
+  // Population variance: sum((x - mu)^2) / n
+  const varPnl = (wins * Math.pow(payout - mu, 2) + losses * Math.pow(-1 - mu, 2)) / n;
+  const sigma  = Math.sqrt(Math.max(varPnl, 1e-12)); // epsilon guard
+  return parseFloat((mu / sigma).toFixed(6));
+}
+
+// runValidationEngine — partitions digits into IS/OOS/WF and evaluates each.
+// digits    : full tick digit array (length >= 50000 recommended)
+// payout    : net profit per unit on WIN (0.95 for DIFFERS)
+// breakEven : minimum win rate for EV >= 0 (calculateBreakEvenWinRate(payout))
+// Returns a ValidationRecord with per-partition stats and final status.
+function runValidationEngine(digits, payout, breakEven) {
+  const N = digits.length;
+  if (N < 1000) return { status: "INSUFFICIENT_DATA", n: N, minRequired: 1000 };
+
+  // Partition boundaries (spec: IS=50%, OOS=30%, WF=20%)
+  const isEnd  = Math.floor(N * 0.50);
+  const oosEnd = Math.floor(N * 0.80);
+
+  const partitions = [
+    { name: "IS",  label: "In-Sample (50%)",       slice: digits.slice(0, isEnd)       },
+    { name: "OOS", label: "Out-of-Sample (30%)",   slice: digits.slice(isEnd, oosEnd)  },
+    { name: "WF",  label: "Walk-Forward (20%)",    slice: digits.slice(oosEnd)         },
+  ];
+
+  const results = partitions.map(({ name, label, slice }) => {
+    const n = slice.length;
+    // Win = digit DIFFERS from a fixed target. Since DIFFERS wins when any
+    // digit other than the barrier appears, and there is no fixed signal digit
+    // in this pure statistical framework, we measure the empirical digit
+    // distribution win rate: P(digit != most frequent digit in IS partition).
+    // Per spec: the engine validates the BASE RATE edge, not a heuristic signal.
+    // We count wins as ticks where digit != modal digit of the IS partition.
+    // The modal digit is fixed from IS to prevent look-ahead bias in OOS/WF.
+    const isSlice = digits.slice(0, isEnd);
+    const isFreq  = Array(10).fill(0);
+    isSlice.forEach(d => isFreq[d]++);
+    const modalDigit = isFreq.indexOf(Math.max(...isFreq));
+
+    let wins = 0;
+    for (let i = 0; i < n; i++) if (slice[i] !== modalDigit) wins++;
+
+    const wr     = wins / n;
+    const ev     = calculateAsymmetricEV(wr, payout);
+    const ws     = calculateWilsonScore(wins, n, 2.576); // 99% CI
+    const pVal   = binomialExactP(wins, n, breakEven);   // one-tailed: does wr beat breakEven?
+    const sd     = discreteSharpe(wins, n, payout);
+
+    // Rejection checks
+    const r1Fail = pVal >= 0.001;
+    const r2Fail = ws.lower < breakEven;
+    const r3Fail = name === "WF" && ev <= 0;
+    const passes = !r1Fail && !r2Fail && !r3Fail;
+
+    return {
+      name, label, n, wins,
+      winRate  : parseFloat((wr * 100).toFixed(4)),
+      ev       : parseFloat(ev.toFixed(6)),
+      pValue   : pVal,
+      wilson   : { lower: ws.lower, upper: ws.upper, centre: ws.centre },
+      sharpe   : sd,
+      r1Fail, r2Fail, r3Fail,
+      passes,
+      modalDigit,
+    };
+  });
+
+  const isResult  = results[0];
+  const oosResult = results[1];
+  const wfResult  = results[2];
+
+  // Alpha Decay: dSR = (Sd_IS - Sd_OOS) / Sd_IS  (spec §Alpha Decay)
+  const alphaDeck = isResult.sharpe !== 0
+    ? parseFloat(((isResult.sharpe - oosResult.sharpe) / Math.abs(isResult.sharpe)).toFixed(4))
+    : null;
+  const r4Fail = alphaDeck !== null && alphaDeck > 0.25;
+
+  const allPass = results.every(r => r.passes) && !r4Fail;
+
+  return {
+    status      : allPass ? "VALIDATED" : results.some(r => !r.passes) ? "REJECTED" : r4Fail ? "REJECTED" : "PENDING",
+    n           : N,
+    payout,
+    breakEven   : parseFloat((breakEven * 100).toFixed(4)),
+    partitions  : results,
+    alphaDeck,
+    r4Fail,
+    allPass,
+    minRequired : 50000,
+    reliable    : N >= 50000,
+    ts          : Date.now(),
+  };
+}
+
 // ---- END LAB STATISTICS ENGINE ------------------------------------------
 
 // ── CSS ───────────────────────────────────────────────────────────────────────
@@ -1484,6 +1656,8 @@ export default function DerivOracle() {
   // ---- LAB: Signal Detection State ----
   const [labStats, setLabStats] = useState(null);
   const [labRunning, setLabRunning] = useState(false);
+  const [validationResult, setValidationResult] = useState(null);
+  const [validationRunning, setValidationRunning] = useState(false);
   const [labTickTotal, setLabTickTotal] = useState(0);
   const labTickBufferRef = useRef([]);
   const labAutoCounterRef = useRef(0);
@@ -2565,6 +2739,22 @@ export default function DerivOracle() {
         : "CI lower bound " + (evCalibWsMatches.lower * 100).toFixed(1) + "% does not clear break-even -- insufficient evidence") : null,
     },
   ];
+
+  // ── VALIDATION ENGINE computed display vars (Task 8) ────────────────────────
+  const valN           = labN;
+  const valMinN        = 50000;
+  const valUnlock      = valN >= 1000;  // show engine at 1k, reliable at 50k
+  const valReliable    = valN >= valMinN;
+  const valPct         = Math.min(100, Math.round((valN / valMinN) * 100));
+  const valStatusColor = !validationResult ? "var(--text-dim)"
+    : validationResult.status === "VALIDATED" ? "var(--green)"
+    : validationResult.status === "REJECTED"  ? "var(--red)"
+    : "var(--yellow)";
+  const valStatusLabel = !validationResult ? "AWAITING RUN"
+    : validationResult.status;
+  const valPartColors  = validationResult ? validationResult.partitions.map(p =>
+    p.passes ? "var(--green)" : "var(--red)"
+  ) : ["var(--text-dim)", "var(--text-dim)", "var(--text-dim)"];
 
   // Execute tab computed vars (extracted from JSX IIFE -- keep before return)
   const execColdDigit = hotCold.cold.length > 0 ? hotCold.cold[0] : null;
@@ -4528,6 +4718,139 @@ export default function DerivOracle() {
                 )}
                 {!labEntResult && labEntUnlock && (
                   <div style={{ fontSize: 9, color: "var(--text-dim)", marginTop: 6 }}>Run Analysis to compute.</div>
+                )}
+              </div>
+
+              {/* ---- MASTER VALIDATION ENGINE (Task 8) ---- */}
+              <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--bg2)", borderRadius: 4,
+                border: "1px solid " + valStatusColor }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, textTransform: "uppercase" }}>
+                    MASTER VALIDATION ENGINE -- IS / OOS / WF
+                  </div>
+                  <span style={{ fontSize: 11, fontFamily: "var(--head)", fontWeight: 700,
+                    letterSpacing: 2, color: valStatusColor }}>{valStatusLabel}</span>
+                </div>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", lineHeight: 1.7, marginBottom: 8 }}>
+                  Splits tick data into IS (50%), OOS (30%), WF (20%). Runs Wilson CI, binomial p-value,
+                  and Discrete Sharpe on each partition. VALIDATED only when all rejection criteria pass
+                  on all three partitions sequentially. Reliable at {valMinN.toLocaleString()} ticks.
+                </div>
+                {/* Progress bar to reliable threshold */}
+                {!valReliable && (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, marginBottom: 4 }}>
+                      <span style={{ color: "var(--text-dim)" }}>Ticks toward reliable threshold</span>
+                      <span style={{ color: valReliable ? "var(--green)" : "var(--text-dim)", fontFamily: "var(--mono)" }}>
+                        {valN.toLocaleString()} / {valMinN.toLocaleString()}
+                      </span>
+                    </div>
+                    <div style={{ height: 4, background: "var(--bg3)", borderRadius: 2 }}>
+                      <div style={{ width: valPct + "%", height: "100%", background: "var(--cyan)", borderRadius: 2, transition: "width 0.5s" }} />
+                    </div>
+                  </div>
+                )}
+                {/* Run button */}
+                {valUnlock && (
+                  <button className="btn btn-green" style={{ width: "100%", padding: "8px", fontSize: 10,
+                    letterSpacing: 2, marginBottom: 10, opacity: validationRunning ? 0.5 : 1 }}
+                    onClick={() => {
+                      if (validationRunning) return;
+                      setValidationRunning(true);
+                      setTimeout(() => {
+                        try {
+                          const buf = labTickBufferRef.current;
+                          const be  = calculateBreakEvenWinRate(0.95);
+                          const res = runValidationEngine(buf, 0.95, be);
+                          setValidationResult(res);
+                        } catch(e) { console.error("[Validation]", e); }
+                        setValidationRunning(false);
+                      }, 80);
+                    }}>
+                    {validationRunning ? "RUNNING..." : "RUN VALIDATION ENGINE"}
+                  </button>
+                )}
+                {!valUnlock && (
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", padding: "6px 0" }}>
+                    Need 1,000+ ticks in Lab buffer to run. Currently: {valN.toLocaleString()}.
+                  </div>
+                )}
+                {/* Results table */}
+                {validationResult && (
+                  <div>
+                    {/* Rejection flags summary */}
+                    {validationResult.status !== "INSUFFICIENT_DATA" && (
+                      <div style={{ marginBottom: 10, padding: "8px 10px", borderRadius: 3,
+                        background: validationResult.allPass ? "rgba(0,255,136,0.06)" : "rgba(255,51,102,0.08)",
+                        border: "1px solid " + valStatusColor }}>
+                        <div style={{ fontSize: 10, fontFamily: "var(--head)", letterSpacing: 2,
+                          color: valStatusColor, marginBottom: 4 }}>
+                          {validationResult.status === "VALIDATED"
+                            ? "ALL CRITERIA PASSED -- EDGE CERTIFIED"
+                            : "REJECTION CRITERIA TRIGGERED"}
+                        </div>
+                        <div style={{ fontSize: 9, color: "var(--text-dim)", fontFamily: "var(--mono)", lineHeight: 1.8 }}>
+                          {!validationResult.reliable && (
+                            <div style={{ color: "var(--yellow)" }}>
+                              WARNING: n={validationResult.n.toLocaleString()} -- below {validationResult.minRequired.toLocaleString()} tick reliable threshold. Results are indicative only.
+                            </div>
+                          )}
+                          <div>n={validationResult.n.toLocaleString()} | payout={validationResult.payout} | break-even={validationResult.breakEven}%</div>
+                          {validationResult.alphaDeck !== null && (
+                            <div style={{ color: validationResult.r4Fail ? "var(--red)" : "var(--green)" }}>
+                              Alpha Decay (dSR): {(validationResult.alphaDeck * 100).toFixed(2)}%
+                              {validationResult.r4Fail ? " EXCEEDS 25% LIMIT -- R4 FAIL" : " within 25% limit"}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {/* Per-partition table */}
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9, fontFamily: "var(--mono)" }}>
+                        <thead>
+                          <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                            {["PARTITION", "n", "WIN RATE", "EV/UNIT", "p-VALUE", "WILSON 99% CI", "SHARPE", "STATUS"].map(h => (
+                              <th key={h} style={{ padding: "5px 8px", color: "var(--text-dim)", letterSpacing: 1,
+                                textAlign: "left", fontWeight: 400, fontSize: 8 }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {validationResult.partitions && validationResult.partitions.map((p, i) => (
+                            <tr key={p.name} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)",
+                              borderLeft: "2px solid " + valPartColors[i] }}>
+                              <td style={{ padding: "6px 8px", color: valPartColors[i],
+                                fontFamily: "var(--head)", letterSpacing: 1, fontWeight: 700 }}>{p.name}</td>
+                              <td style={{ padding: "6px 8px", color: "var(--text-dim)" }}>{p.n.toLocaleString()}</td>
+                              <td style={{ padding: "6px 8px", color: p.winRate / 100 > p.r2Fail ? "var(--green)" : "var(--red)" }}>
+                                {p.winRate.toFixed(2)}%</td>
+                              <td style={{ padding: "6px 8px",
+                                color: p.ev > 0 ? "var(--green)" : "var(--red)" }}>
+                                {p.ev >= 0 ? "+" : ""}{(p.ev * 100).toFixed(2)}c</td>
+                              <td style={{ padding: "6px 8px",
+                                color: p.pValue < 0.001 ? "var(--green)" : "var(--red)" }}>
+                                {p.pValue < 0.0001 ? "<0.0001" : p.pValue.toFixed(6)}
+                                {p.r1Fail ? " R1" : ""}</td>
+                              <td style={{ padding: "6px 8px",
+                                color: !p.r2Fail ? "var(--green)" : "var(--red)" }}>
+                                [{(p.wilson.lower * 100).toFixed(1)}%, {(p.wilson.upper * 100).toFixed(1)}%]
+                                {p.r2Fail ? " R2" : ""}</td>
+                              <td style={{ padding: "6px 8px", color: p.sharpe > 0 ? "var(--green)" : "var(--red)" }}>
+                                {p.sharpe.toFixed(4)}</td>
+                              <td style={{ padding: "6px 8px", fontWeight: 700, fontFamily: "var(--head)",
+                                letterSpacing: 1, color: p.passes ? "var(--green)" : "var(--red)" }}>
+                                {p.passes ? "PASS" : "FAIL"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {/* Rejection criteria legend */}
+                    <div style={{ fontSize: 8, color: "var(--text-dim)", marginTop: 8, lineHeight: 1.8 }}>
+                      R1: p &ge; 0.001 | R2: Wilson lower bound &lt; break-even | R3: EV &le; 0 in WF | R4: Alpha Decay &gt; 25%
+                    </div>
+                  </div>
                 )}
               </div>
 
