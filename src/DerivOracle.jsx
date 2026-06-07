@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  CartesianGrid, Area, AreaChart, Cell
+  CartesianGrid, Area, AreaChart, Cell, ReferenceLine
 } from "recharts";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
@@ -414,16 +414,422 @@ function labRunPersistence(digitArr) {
   const drift = t1 && t2 ? parseFloat(Math.abs(t1.chiSq - t2.chiSq).toFixed(3)) : null;
   return { t1, t2, drift, consistent: drift !== null && drift < 8 };
 }
-function labComputeVerdict(chi, trans, persist) {
+function labComputeVerdict(chi, trans, persist, runs, acf, entropy) {
   if (!chi) return null;
+  // Task 4: FWER-corrected thresholds
+  const chiAlpha   = fwerAdjustedAlpha(0.05, 10);  // 0.005
+  const transAlpha = fwerAdjustedAlpha(0.05, 10);  // 0.005
   let flags = 0;
-  if (chi.pValue < 0.05) flags++;
-  if (trans) { const sig = trans.rowTests.filter(r => r.pValue !== null && r.pValue < 0.05); if (sig.length >= 2) flags++; }
+  if (chi.pValue < chiAlpha) flags++;
+  if (trans) {
+    const sig = trans.rowTests.filter(r => r.pValue !== null && r.pValue < transAlpha);
+    if (sig.length >= 2) flags++;
+  }
   if (persist && !persist.consistent) flags++;
+  // Task 5: Wald-Wolfowitz — single test, alpha = 0.05
+  if (runs && runs.pValue !== null && runs.pValue < fwerAdjustedAlpha(0.05, 1)) flags++;
+  // Task 6: ACF — flagged lags breaching Bartlett 99% hurdle (3+ = signal)
+  if (acf && acf.verdict === "SIGNAL") flags++;
+  // Task 7: Shannon Entropy — persistent low-entropy blocks (4+ = signal)
+  if (entropy && entropy.verdict === "DRIFT_DETECTED") flags++;
   if (flags === 0) return "CLEAN";
   if (flags === 1) return "MARGINAL";
   return "SIGNAL";
 }
+// ── TASK 3: ASYMMETRIC EV CALIBRATOR ─────────────────────────────────────────
+// calculateAsymmetricEV — true long-run expected value per unit staked.
+// winRate  : decimal (e.g. 0.924 for 92.4%)
+// payout   : net profit per unit staked on a WIN (e.g. 0.95 for Deriv DIFFERS)
+// Returns  : EV per unit staked. Positive = profitable. Negative = ruin.
+// Formula  : EV = (winRate * payout) - (1 - winRate)
+function calculateAsymmetricEV(winRate, payout) {
+  if (winRate < 0 || winRate > 1) return NaN;
+  if (payout <= 0) return NaN;
+  return parseFloat(((winRate * payout) - (1 - winRate)).toFixed(6));
+}
+
+// calculateBreakEvenWinRate — minimum win rate to achieve EV >= 0.
+// payout   : net profit per unit staked on a WIN
+// Formula  : p* = 1 / (1 + payout)
+function calculateBreakEvenWinRate(payout) {
+  if (payout <= 0) return NaN;
+  return parseFloat((1 / (1 + payout)).toFixed(6));
+}
+
+// calculateWilsonScore — two-sided Wilson Score confidence interval.
+// wins     : integer count of wins
+// trials   : integer total trades
+// z        : critical z-value (2.576 = 99% two-sided, 1.96 = 95%)
+// Returns  : { lower, upper, centre } all as decimals
+// Formula  : Wilson (1927) — no normal approximation collapse at extremes
+function calculateWilsonScore(wins, trials, z) {
+  if (trials <= 0) return { lower: 0, upper: 1, centre: 0 };
+  const z2   = z * z;
+  const pHat = wins / trials;
+  const denom = 1 + z2 / trials;
+  const centre = (pHat + z2 / (2 * trials)) / denom;
+  const spread = (z / denom) * Math.sqrt(
+    (pHat * (1 - pHat) / trials) + (z2 / (4 * trials * trials))
+  );
+  return {
+    lower  : parseFloat(Math.max(0, centre - spread).toFixed(6)),
+    upper  : parseFloat(Math.min(1, centre + spread).toFixed(6)),
+    centre : parseFloat(centre.toFixed(6)),
+  };
+}
+
+// ── TASK 4: FWER UTILITY ──────────────────────────────────────────────────────
+// fwerAdjustedAlpha — Bonferroni correction for simultaneous hypothesis tests.
+// baseAlpha : family-wise error rate target (typically 0.05)
+// testCount : number of simultaneous tests being run
+// Returns   : per-test critical threshold alpha_adj = baseAlpha / testCount
+// Usage     : pass result as the significance threshold when evaluating each
+//             individual test p-value in the transition matrix or ACF.
+function fwerAdjustedAlpha(baseAlpha, testCount) {
+  if (testCount <= 0) return baseAlpha;
+  return parseFloat((baseAlpha / testCount).toFixed(8));
+}
+
+// ── TASK 5: WALD-WOLFOWITZ RUNS TEST ─────────────────────────────────────────
+// runWaldWolfowitz(digits)
+// Spec: ORACLE_BUILD_SPEC.md Section 3
+// Binary vector: 1 if D_t > 4.5, else 0  (i.e. digits 5-9 = 1, digits 0-4 = 0)
+// Counts contiguous runs R, computes expected mu_R and sigma_R^2, Z-score and p.
+// Returns null when n < 20 (insufficient data).
+function normalCDF(z) {
+  // Abramowitz & Stegun approximation — max error 7.5e-8
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989423 * Math.exp(-z * z / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.7814779 + t * (-1.8212560 + t * 1.3302744))));
+  return z >= 0 ? 1 - p : p;
+}
+
+function runWaldWolfowitz(digits) {
+  const n = digits.length;
+  if (n < 20) return null;
+
+  // Step 1 — binarise: 1 if digit > 4 (i.e. >= 5), else 0
+  const binary = digits.map(d => (d > 4 ? 1 : 0));
+
+  // Step 2 — count n1 (ones) and n2 (zeros)
+  let n1 = 0;
+  for (let i = 0; i < n; i++) n1 += binary[i];
+  const n2 = n - n1;
+
+  // Edge case: all same value — variance would be 0
+  if (n1 === 0 || n2 === 0) {
+    return { n, n1, n2, runs: 1, muR: 1, sigmaR: 0, z: null, pValue: null,
+      verdict: "DEGENERATE", note: "All digits on one side of median — test inapplicable." };
+  }
+
+  // Step 3 — count runs R (contiguous blocks of identical binary value)
+  let R = 1;
+  for (let i = 1; i < n; i++) {
+    if (binary[i] !== binary[i - 1]) R++;
+  }
+
+  // Step 4 — expected mean and variance of R under null (independence)
+  const muR     = (2 * n1 * n2) / (n1 + n2) + 1;
+  const sigmaR2 = (2 * n1 * n2 * (2 * n1 * n2 - n1 - n2))
+                  / (Math.pow(n1 + n2, 2) * (n1 + n2 - 1));
+  const sigmaR  = Math.sqrt(Math.max(sigmaR2, 1e-12)); // epsilon guard per spec
+
+  // Step 5 — Z-score (continuity correction optional — not in spec, omit)
+  const Z = (R - muR) / sigmaR;
+
+  // Step 6 — two-tailed p-value from standard normal CDF
+  const pValue = parseFloat((2 * Math.min(normalCDF(Z), 1 - normalCDF(Z))).toFixed(8));
+  const alpha  = fwerAdjustedAlpha(0.05, 1); // single test — no multi-comparison penalty
+
+  const verdict = pValue < alpha ? "SIGNAL" : "INDEPENDENT";
+
+  return {
+    n, n1, n2, runs: R,
+    muR    : parseFloat(muR.toFixed(4)),
+    sigmaR : parseFloat(sigmaR.toFixed(4)),
+    z      : parseFloat(Z.toFixed(4)),
+    pValue,
+    alpha,
+    verdict,
+    note: verdict === "SIGNAL"
+      ? "Non-random run structure detected (p=" + pValue + "). Possible mean-reversion or trend clustering."
+      : "Run count consistent with serial independence (p=" + pValue + ").",
+  };
+}
+
+// ── TASK 6: AUTOCORRELATION FUNCTION (ACF) ───────────────────────────────────
+// runACF(digits, maxLag)
+// Spec: ORACLE_BUILD_SPEC.md Section 4
+// Centres digits at 4.5 (midpoint of 0-9), computes rho_k for k=1..maxLag.
+// Significance hurdle (Bartlett 99%): +/- 2.576 / sqrt(N)
+// Single O(N*K) pass — no allocations inside the lag loop.
+function runACF(digits, maxLag) {
+  const N = digits.length;
+  if (N < maxLag + 2) return null;
+
+  // Centre: y_t = D_t - 4.5
+  const y    = new Float64Array(N);
+  let   yBar = 0;
+  for (let i = 0; i < N; i++) { y[i] = digits[i] - 4.5; yBar += y[i]; }
+  yBar /= N;
+
+  // Denominator: sum of (y_t - yBar)^2 over all t
+  let denom = 0;
+  for (let i = 0; i < N; i++) denom += (y[i] - yBar) * (y[i] - yBar);
+  if (denom < 1e-12) return null; // epsilon guard — degenerate constant series
+
+  // rho_k for each lag
+  const lags = [];
+  for (let k = 1; k <= maxLag; k++) {
+    let num = 0;
+    for (let t = 0; t < N - k; t++) num += (y[t] - yBar) * (y[t + k] - yBar);
+    const rho = parseFloat((num / denom).toFixed(6));
+    lags.push({ k, rho });
+  }
+
+  // Bartlett 99% significance hurdle: +/- 2.576 / sqrt(N)
+  const hurdle    = parseFloat((2.576 / Math.sqrt(N)).toFixed(6));
+  // FWER: 20 simultaneous lags — adjusted alpha for labelling
+  const fwerHurdle = parseFloat((2.576 / Math.sqrt(N) * Math.sqrt(fwerAdjustedAlpha(0.05, 20) / 0.005)).toFixed(6));
+
+  // Flag lags that breach the Bartlett 99% hurdle
+  const flagged = lags.filter(l => Math.abs(l.rho) > hurdle);
+
+  return {
+    N, maxLag, lags, hurdle, fwerHurdle,
+    flaggedCount : flagged.length,
+    flagged,
+    verdict      : flagged.length === 0 ? "INDEPENDENT" : flagged.length <= 2 ? "MARGINAL" : "SIGNAL",
+  };
+}
+
+// ── TASK 7: SHANNON ENTROPY DRIFT ────────────────────────────────────────────
+// calculateShannonEntropyDrift(digits, blockSize)
+// Spec: ORACLE_BUILD_SPEC.md Section 5
+// Splits digits into sequential blocks of blockSize, computes H per block.
+// H = -sum(p_i * log2(p_i)) for i=0..9
+// Edge case: p_i = 0 -> 0 (not -Inf) per spec.
+// Maximum uniform entropy for 10 equiprobable digits: log2(10) = 3.32193 bits.
+const ACF_MAX_ENTROPY = parseFloat(Math.log2(10).toFixed(5)); // 3.32193
+
+function calculateShannonEntropyDrift(digits, blockSize) {
+  const N      = digits.length;
+  const B      = blockSize || 100;
+  if (N < B) return null;
+
+  const blocks  = Math.floor(N / B);
+  const entropy = [];
+
+  for (let b = 0; b < blocks; b++) {
+    const freq = new Array(10).fill(0);
+    const start = b * B;
+    for (let i = start; i < start + B; i++) freq[digits[i]]++;
+
+    let H = 0;
+    for (let d = 0; d < 10; d++) {
+      if (freq[d] === 0) continue; // 0 * log2(0) = 0 per spec edge case
+      const p = freq[d] / B;
+      H -= p * Math.log2(p);
+    }
+    entropy.push({
+      block    : b + 1,
+      startIdx : b * B,
+      H        : parseFloat(H.toFixed(5)),
+    });
+  }
+
+  // Summary stats
+  const hValues  = entropy.map(e => e.H);
+  const hMean    = parseFloat((hValues.reduce((s, h) => s + h, 0) / hValues.length).toFixed(5));
+  const hMin     = parseFloat(Math.min(...hValues).toFixed(5));
+  const hMax     = parseFloat(Math.max(...hValues).toFixed(5));
+  // Low-entropy blocks: H < 3.0 bits (drops below ~91% of max uniform)
+  const lowBlocks = entropy.filter(e => e.H < 3.0);
+
+  return {
+    N, blockSize: B, blocks: blocks,
+    entropy,         // full array for chart
+    hMean, hMin, hMax,
+    maxEntropy   : ACF_MAX_ENTROPY,
+    lowBlocks    : lowBlocks.length,
+    verdict      : lowBlocks.length === 0 ? "STABLE"
+                 : lowBlocks.length <= 3  ? "MARGINAL"
+                 : "DRIFT_DETECTED",
+  };
+}
+
+// ── TASK 8: MASTER VALIDATION ENGINE ─────────────────────────────────────────
+// Spec: ORACLE_BUILD_SPEC.md — Statistical Validation Framework
+//
+// Partitions:  IS=50%  OOS=30%  WF=20%  (requires N >= 50,000)
+// Per partition runs:
+//   1. Wilson Score 99% CI  (calculateWilsonScore already defined above)
+//   2. Binomial exact p-value (one-tailed upper: does win rate beat break-even?)
+//   3. Discrete Sharpe Sd = mu / sigma on per-trade P&L outcomes
+//   4. Alpha Decay: dSR = (Sd_IS - Sd_OOS) / Sd_IS
+//
+// Rejection criteria (spec §Rejection Criteria):
+//   R1: p >= 0.001 on any partition
+//   R2: Wilson lower bound < break-even win rate on any partition
+//   R3: EV <= 0 during WF phase
+//   R4: Alpha Decay > 0.25
+//
+// VALIDATED only when all four rejection criteria pass on all three partitions.
+
+// binomialExactP — one-tailed upper binomial CDF via log-beta regularisation.
+// Returns P(X >= wins | n, p0) = 1 - CDF(wins-1 | n, p0)
+// Uses the regularised incomplete beta function I_x(a,b) approximated via
+// continued fraction (Numerical Recipes). Handles large n without overflow.
+function logBeta(a, b) {
+  return logGamma(a) + logGamma(b) - logGamma(a + b);
+}
+function betaCF(a, b, x) {
+  // Lentz continued fraction — Numerical Recipes §6.4
+  const MAXIT = 200, EPS = 1e-10, FPMIN = 1e-30;
+  const qab = a + b, qap = a + 1, qam = a - 1;
+  let c = 1, d = 1 - qab * x / qap;
+  if (Math.abs(d) < FPMIN) d = FPMIN;
+  d = 1 / d;
+  let h = d;
+  for (let m = 1; m <= MAXIT; m++) {
+    const m2 = 2 * m;
+    let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+    d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+    c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+    d = 1 / d; h *= d * c;
+    aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+    d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+    c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+    d = 1 / d;
+    const del = d * c; h *= del;
+    if (Math.abs(del - 1) < EPS) break;
+  }
+  return h;
+}
+function regularisedBeta(x, a, b) {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  const lbeta = logBeta(a, b);
+  const front = Math.exp(Math.log(x) * a + Math.log(1 - x) * b - lbeta) / a;
+  // Use symmetry for numerical stability
+  if (x < (a + 1) / (a + b + 2))
+    return front * betaCF(a, b, x);
+  return 1 - Math.exp(Math.log(1 - x) * b + Math.log(x) * a - lbeta) / b * betaCF(b, a, 1 - x);
+}
+function binomialExactP(wins, n, p0) {
+  // P(X >= wins | n, p0) — one-tailed upper tail
+  // = 1 - P(X <= wins-1) = I_{p0}(wins, n-wins+1)  (regularised incomplete beta)
+  if (wins <= 0) return 1;
+  if (wins > n)  return 0;
+  return parseFloat(Math.max(0, Math.min(1,
+    regularisedBeta(p0, wins, n - wins + 1)
+  )).toFixed(8));
+}
+
+// discreteSharpe — reward-to-risk on binary per-trade P&L outcomes.
+// Spec formula: Sd = mu / sigma  where mu = mean P&L, sigma = std-dev P&L
+// P&L modelled as: +payout on WIN, -1 on LOSS (normalised to unit stake)
+// Uses two-pass stable variance per spec Failure Analysis note.
+function discreteSharpe(wins, n, payout) {
+  if (n <= 1) return 0;
+  const losses = n - wins;
+  // Build P&L array: WIN = +payout, LOSS = -1
+  // Instead of allocating n-length array, use closed-form mean/variance
+  const mu = (wins * payout - losses) / n;
+  // Population variance: sum((x - mu)^2) / n
+  const varPnl = (wins * Math.pow(payout - mu, 2) + losses * Math.pow(-1 - mu, 2)) / n;
+  const sigma  = Math.sqrt(Math.max(varPnl, 1e-12)); // epsilon guard
+  return parseFloat((mu / sigma).toFixed(6));
+}
+
+// runValidationEngine — partitions digits into IS/OOS/WF and evaluates each.
+// digits    : full tick digit array (length >= 50000 recommended)
+// payout    : net profit per unit on WIN (0.95 for DIFFERS)
+// breakEven : minimum win rate for EV >= 0 (calculateBreakEvenWinRate(payout))
+// Returns a ValidationRecord with per-partition stats and final status.
+function runValidationEngine(digits, payout, breakEven) {
+  const N = digits.length;
+  if (N < 1000) return { status: "INSUFFICIENT_DATA", n: N, minRequired: 1000 };
+
+  // Partition boundaries (spec: IS=50%, OOS=30%, WF=20%)
+  const isEnd  = Math.floor(N * 0.50);
+  const oosEnd = Math.floor(N * 0.80);
+
+  const partitions = [
+    { name: "IS",  label: "In-Sample (50%)",       slice: digits.slice(0, isEnd)       },
+    { name: "OOS", label: "Out-of-Sample (30%)",   slice: digits.slice(isEnd, oosEnd)  },
+    { name: "WF",  label: "Walk-Forward (20%)",    slice: digits.slice(oosEnd)         },
+  ];
+
+  const results = partitions.map(({ name, label, slice }) => {
+    const n = slice.length;
+    // Win = digit DIFFERS from a fixed target. Since DIFFERS wins when any
+    // digit other than the barrier appears, and there is no fixed signal digit
+    // in this pure statistical framework, we measure the empirical digit
+    // distribution win rate: P(digit != most frequent digit in IS partition).
+    // Per spec: the engine validates the BASE RATE edge, not a heuristic signal.
+    // We count wins as ticks where digit != modal digit of the IS partition.
+    // The modal digit is fixed from IS to prevent look-ahead bias in OOS/WF.
+    const isSlice = digits.slice(0, isEnd);
+    const isFreq  = Array(10).fill(0);
+    isSlice.forEach(d => isFreq[d]++);
+    const modalDigit = isFreq.indexOf(Math.max(...isFreq));
+
+    let wins = 0;
+    for (let i = 0; i < n; i++) if (slice[i] !== modalDigit) wins++;
+
+    const wr     = wins / n;
+    const ev     = calculateAsymmetricEV(wr, payout);
+    const ws     = calculateWilsonScore(wins, n, 2.576); // 99% CI
+    const pVal   = binomialExactP(wins, n, breakEven);   // one-tailed: does wr beat breakEven?
+    const sd     = discreteSharpe(wins, n, payout);
+
+    // Rejection checks
+    const r1Fail = pVal >= 0.001;
+    const r2Fail = ws.lower < breakEven;
+    const r3Fail = name === "WF" && ev <= 0;
+    const passes = !r1Fail && !r2Fail && !r3Fail;
+
+    return {
+      name, label, n, wins,
+      winRate  : parseFloat((wr * 100).toFixed(4)),
+      ev       : parseFloat(ev.toFixed(6)),
+      pValue   : pVal,
+      wilson   : { lower: ws.lower, upper: ws.upper, centre: ws.centre },
+      sharpe   : sd,
+      r1Fail, r2Fail, r3Fail,
+      passes,
+      modalDigit,
+    };
+  });
+
+  const isResult  = results[0];
+  const oosResult = results[1];
+  const wfResult  = results[2];
+
+  // Alpha Decay: dSR = (Sd_IS - Sd_OOS) / Sd_IS  (spec §Alpha Decay)
+  const alphaDeck = isResult.sharpe !== 0
+    ? parseFloat(((isResult.sharpe - oosResult.sharpe) / Math.abs(isResult.sharpe)).toFixed(4))
+    : null;
+  const r4Fail = alphaDeck !== null && alphaDeck > 0.25;
+
+  const allPass = results.every(r => r.passes) && !r4Fail;
+
+  return {
+    status      : allPass ? "VALIDATED" : results.some(r => !r.passes) ? "REJECTED" : r4Fail ? "REJECTED" : "PENDING",
+    n           : N,
+    payout,
+    breakEven   : parseFloat((breakEven * 100).toFixed(4)),
+    partitions  : results,
+    alphaDeck,
+    r4Fail,
+    allPass,
+    minRequired : 50000,
+    reliable    : N >= 50000,
+    ts          : Date.now(),
+  };
+}
+
 // ---- END LAB STATISTICS ENGINE ------------------------------------------
 
 // ── CSS ───────────────────────────────────────────────────────────────────────
@@ -822,7 +1228,7 @@ const css = `
     .phase2-title{font-size:8px;}
     .phase2-sub{font-size:8px;}
   }
-  /* ── MESH TAB ──────────────────────────────────────────────────────── */
+  /* ── MESH TAB ─────────────────────────────────────────────────────────── */
   .mesh-layout{display:grid;grid-template-columns:1fr 340px;gap:12px;margin-bottom:12px;}
   .mesh-canvas-wrap{position:relative;background:var(--bg2);border:1px solid var(--border);border-radius:4px;overflow:hidden;}
   .mesh-side{display:flex;flex-direction:column;gap:10px;}
@@ -1282,7 +1688,28 @@ export default function DerivOracle() {
 
   // ---- LAB: Signal Detection State ----
   const [labStats, setLabStats] = useState(null);
+  // ── MESH ENGINE STATE (Digit Transition Matrix) ──────────────────────────
+  const meshTRef         = useRef(Array.from({length:10},()=>Array(10).fill(0)));
+  const meshMRef         = useRef(Array(10).fill(0));
+  const meshBufRef       = useRef([]);
+  const meshDomStableRef = useRef({digit:null, count:0});
+  const [meshState,      setMeshState]      = useState("IDLE");
+  const [meshDom,        setMeshDom]        = useState(null);
+  const [meshP,          setMeshP]          = useState(null);
+  const [meshM,          setMeshM]          = useState(Array(10).fill(0));
+  const [meshInterval,   setMeshInterval]   = useState(null);
+  const [meshSignal,     setMeshSignal]     = useState("IDLE");
+  const [meshN,          setMeshN]          = useState(100);
+  const [meshK,          setMeshK]          = useState(1);
+  const [meshPayout,     setMeshPayout]     = useState(0.95);
+  const [meshEpsilon,    setMeshEpsilon]    = useState(0.03);
+  const [meshLog,        setMeshLog]        = useState("Waiting for live ticks (need N+k ticks)...");
+  const [meshHoveredNode,setMeshHoveredNode]= useState(null);
+
+
   const [labRunning, setLabRunning] = useState(false);
+  const [validationResult, setValidationResult] = useState(null);
+  const [validationRunning, setValidationRunning] = useState(false);
   const [labTickTotal, setLabTickTotal] = useState(0);
   const labTickBufferRef = useRef([]);
   const labAutoCounterRef = useRef(0);
@@ -1934,11 +2361,14 @@ export default function DerivOracle() {
     setLabRunning(true);
     setTimeout(() => {
       try {
-        const chi = labRunChiSquare(buf);
-        const trans = buf.length >= 200 ? labBuildTransMatrix(buf) : null;
-        const persist = buf.length >= 5000 ? labRunPersistence(buf) : null;
-        const verdict = labComputeVerdict(chi, trans, persist);
-        setLabStats({ chi, trans, persist, verdict, n: buf.length, ts: Date.now() });
+        const chi      = labRunChiSquare(buf);
+        const trans    = buf.length >= 200  ? labBuildTransMatrix(buf)              : null;
+        const persist  = buf.length >= 5000 ? labRunPersistence(buf)                : null;
+        const runs     = buf.length >= 20   ? runWaldWolfowitz(buf)                 : null;
+        const acf      = buf.length >= 50   ? runACF(buf, 20)                       : null;
+        const entropy  = buf.length >= 100  ? calculateShannonEntropyDrift(buf, 100): null;
+        const verdict  = labComputeVerdict(chi, trans, persist, runs, acf, entropy);
+        setLabStats({ chi, trans, persist, runs, acf, entropy, verdict, n: buf.length, ts: Date.now() });
       } catch(e) {}
       setLabRunning(false);
     }, 50);
@@ -2072,12 +2502,57 @@ export default function DerivOracle() {
   const labVerdictDesc = !labStats ? "Collect 1,000+ ticks then click Run Analysis." : labStats.verdict === "CLEAN" ? "All tests pass randomness. Any predictor built on this data amplifies noise. Base rate is your only edge." : labStats.verdict === "SIGNAL" ? "Statistically significant deviation found. See test details below before acting." : "One test flagged weakly. Continue collecting data before drawing conclusions.";
   const labChiColor = !labStats || !labStats.chi ? "var(--text-dim)" : labStats.chi.pValue > 0.05 ? "var(--green)" : labStats.chi.pValue > 0.01 ? "var(--orange)" : "var(--red)";
   const labChiVerdict = !labStats || !labStats.chi ? "--" : labStats.chi.pValue > 0.05 ? "UNIFORM (p=" + labStats.chi.pValue + ")" : labStats.chi.pValue > 0.01 ? "WEAK BIAS (p=" + labStats.chi.pValue + ")" : "BIAS DETECTED (p=" + labStats.chi.pValue + ")";
-  const labTransSigRows = labStats && labStats.trans ? labStats.trans.rowTests.filter(r => r.pValue !== null && r.pValue < 0.05) : [];
+  const labTransSigRows = labStats && labStats.trans ? labStats.trans.rowTests.filter(r => r.pValue !== null && r.pValue < fwerAdjustedAlpha(0.05, 10)) : [];
   const labTransColor = !labStats || !labStats.trans ? "var(--text-dim)" : labTransSigRows.length === 0 ? "var(--green)" : labTransSigRows.length <= 2 ? "var(--orange)" : "var(--red)";
   const labTransVerdict = !labStats || !labStats.trans ? "--" : labTransSigRows.length === 0 ? "INDEPENDENT" : labTransSigRows.length + " row(s) flagged (p < 0.05)";
   const labPersColor = !labStats || !labStats.persist ? "var(--text-dim)" : labStats.persist.consistent ? "var(--green)" : "var(--orange)";
   const labPersVerdict = !labStats || !labStats.persist ? "--" : labStats.persist.consistent ? "CONSISTENT (drift=" + labStats.persist.drift + ")" : "INCONSISTENT (drift=" + labStats.persist.drift + ")";
   const labLastTs = labStats ? new Date(labStats.ts).toLocaleTimeString() : "never";
+  // Task 5 — Wald-Wolfowitz computed display vars
+  const labRunsResult  = labStats && labStats.runs ? labStats.runs : null;
+  const labRunsColor   = !labRunsResult ? "var(--text-dim)"
+    : labRunsResult.verdict === "INDEPENDENT" ? "var(--green)"
+    : labRunsResult.verdict === "SIGNAL"      ? "var(--red)"
+    : "var(--orange)";
+  const labRunsVerdict = !labRunsResult ? "--"
+    : labRunsResult.verdict === "DEGENERATE" ? "DEGENERATE"
+    : labRunsResult.verdict + " (p=" + labRunsResult.pValue + ")";
+  const labRunsUnlock  = labN >= 20;
+
+  // Task 6 — ACF computed display vars
+  const labAcfResult   = labStats && labStats.acf ? labStats.acf : null;
+  const labAcfColor    = !labAcfResult ? "var(--text-dim)"
+    : labAcfResult.verdict === "INDEPENDENT" ? "var(--green)"
+    : labAcfResult.verdict === "MARGINAL"    ? "var(--orange)"
+    : "var(--red)";
+  const labAcfVerdict  = !labAcfResult ? "--"
+    : labAcfResult.verdict + " (" + labAcfResult.flaggedCount + " lag(s) flagged)";
+  const labAcfUnlock   = labN >= 50;
+  // Build chart data — each lag as a bar, colour by significance
+  const labAcfChartData = labAcfResult ? labAcfResult.lags.map(l => ({
+    k      : "k" + l.k,
+    rho    : parseFloat(l.rho.toFixed(4)),
+    absRho : Math.abs(l.rho),
+    fill   : Math.abs(l.rho) > labAcfResult.hurdle ? "var(--red)" : "var(--green)",
+  })) : [];
+  const labAcfHurdle   = labAcfResult ? labAcfResult.hurdle : 0;
+
+  // Task 7 — Shannon Entropy computed display vars
+  const labEntResult   = labStats && labStats.entropy ? labStats.entropy : null;
+  const labEntColor    = !labEntResult ? "var(--text-dim)"
+    : labEntResult.verdict === "STABLE"         ? "var(--green)"
+    : labEntResult.verdict === "MARGINAL"        ? "var(--orange)"
+    : "var(--red)";
+  const labEntVerdict  = !labEntResult ? "--"
+    : labEntResult.verdict + " (mean H=" + labEntResult.hMean + ")";
+  const labEntUnlock   = labN >= 100;
+  // Build chart data for entropy drift line chart
+  const labEntChartData = labEntResult ? labEntResult.entropy.map(e => ({
+    block  : e.block,
+    H      : e.H,
+    maxH   : ACF_MAX_ENTROPY,
+  })) : [];
+
   const labFreqBars = labStats && labStats.chi ? labStats.chi.freq.map((count, d) => {
     const pct = parseFloat(((count / labStats.chi.n) * 100).toFixed(1));
     const dev = parseFloat((pct - 10.0).toFixed(1));
@@ -2254,174 +2729,6 @@ export default function DerivOracle() {
   const statusClass = { idle: "pill-demo", connecting: "pill-connecting", live: "pill-live", error: "pill-error", demo: "pill-demo" };
   const statusLabel = { idle: "OFFLINE", connecting: "CONNECTING...", live: "● LIVE", error: "ERROR", demo: "DEMO MODE" };
 
-
-  // ── MESH ENGINE: per-tick update (called from live tick handler) ─────────
-  // Uses refs for O(1) updates — no setState inside hot path
-  const updateMeshEngine = useCallback((digit) => {
-    const N = meshN;
-    const k = meshK;
-    const alpha = 1; // Laplace smoothing
-    const T = meshTRef.current;
-    const M = meshMRef.current;
-    const buf = meshBufRef.current;
-
-    // Push new digit to buffer
-    buf.push(digit);
-
-    // Only start computing once we have N+k digits
-    if (buf.length < N + k) {
-      const needed = (N + k) - buf.length;
-      if (needed % 10 === 0 || buf.length < 5) {
-        setMeshState("IDLE");
-        setMeshLog("IDLE -- collecting ticks: " + buf.length + " / " + (N + k) + " needed");
-      }
-      return;
-    }
-
-    // Trim buffer to N+k
-    if (buf.length > N + k + 1) {
-      // Remove oldest: decrement T and M for expiring transition
-      const sOld = buf[buf.length - N - k - 2];
-      const gOld = buf[buf.length - N - 2];
-      if (sOld !== undefined && gOld !== undefined) {
-        T[sOld][gOld] = Math.max(0, T[sOld][gOld] - 1);
-        M[sOld] = Math.max(0, M[sOld] - 1);
-      }
-      buf.shift();
-    }
-
-    // Add new transition: d_{t-k} -> d_t
-    const tLen = buf.length;
-    const sNew = buf[tLen - 1 - k];
-    const gNew = buf[tLen - 1];
-    if (sNew !== undefined && gNew !== undefined) {
-      T[sNew][gNew] += 1;
-      M[sNew] += 1;
-    }
-
-    // Compute dominant node i* with stability filter (3 consecutive ticks)
-    let iStar = 0;
-    let maxM = -1;
-    for (let i = 0; i < 10; i++) {
-      const rowSum = T[i].reduce((s, v) => s + v, 0);
-      if (rowSum > 0 && M[i] > maxM) { maxM = M[i]; iStar = i; }
-    }
-
-    // Stability: i* must hold for >= 3 ticks
-    const stab = meshDomStableRef.current;
-    if (stab.digit === iStar) {
-      stab.count += 1;
-    } else {
-      stab.digit = iStar;
-      stab.count = 1;
-    }
-    const stableIStar = stab.count >= 3 ? iStar : (meshDom !== null ? meshDom : iStar);
-
-    // Compute P[i*,j] with Laplace smoothing
-    const rowSum = T[stableIStar].reduce((s, v) => s + v, 0);
-    const P = Array(10).fill(0);
-    for (let j = 0; j < 10; j++) {
-      P[j] = (T[stableIStar][j] + alpha) / (rowSum + 10 * alpha);
-    }
-
-    // Build full P matrix for visualization
-    const fullP = Array.from({length:10}, (_, i) => {
-      const rs = T[i].reduce((s,v) => s+v, 0);
-      return Array.from({length:10}, (__, j) => (T[i][j] + alpha) / (rs + 10 * alpha));
-    });
-
-    // Top 3 targets sorted by probability descending
-    const sorted = P.map((p, j) => ({j, p})).sort((a, b) => b.p - a.p);
-    let top3 = sorted.slice(0, 3);
-
-    // Bounding box
-    let A = Math.min(...top3.map(x => x.j));
-    let B = Math.max(...top3.map(x => x.j));
-    let W = B - A + 1;
-
-    // Shrink rule: if span > 4, drop lowest prob target
-    let signal = "IDLE";
-    let interval = null;
-
-    if (W > 4) {
-      // Drop j3 (lowest of top 3)
-      top3 = top3.slice(0, 2);
-      A = Math.min(...top3.map(x => x.j));
-      B = Math.max(...top3.map(x => x.j));
-      W = B - A + 1;
-      if (W > 4) {
-        // Still too wide — REJECT_DIVERGENT
-        signal = "PAUSED_DRIFT";
-        setMeshLog("REJECT_DIVERGENT: top targets span > 4 even after shrink. i*=" + stableIStar);
-      }
-    }
-
-    if (signal !== "PAUSED_DRIFT") {
-      // Compute P(win) = sum of P[i*, y] for y in [A,B]
-      let Pwin = 0;
-      for (let y = A; y <= B; y++) Pwin += P[y];
-      Pwin = Math.min(0.99, Pwin);
-
-      // Real expectancy: E = Pwin * payout - (1 - Pwin)
-      const payoutMult = meshPayout;
-      const E = Pwin * payoutMult - (1 - Pwin);
-      const threshold = (1 / payoutMult) - 1 + meshEpsilon; // theta_min adjusted
-
-      // Weighted sample X_pred from [A,B]
-      const yRange = [];
-      let totalW = 0;
-      for (let y = A; y <= B; y++) { yRange.push({y, p: P[y]}); totalW += P[y]; }
-      let r = Math.random() * totalW;
-      let Xpred = A;
-      for (const {y, p} of yRange) { r -= p; if (r <= 0) { Xpred = y; break; } }
-
-      interval = { A, B, W, Xpred, Pwin: parseFloat(Pwin.toFixed(4)), E: parseFloat(E.toFixed(4)), threshold: parseFloat(threshold.toFixed(4)) };
-
-      signal = E > 0 && Pwin > (1 / (payoutMult + 1) + meshEpsilon) ? "EXECUTE" : "PAUSED_DRIFT";
-
-      const stateStr = signal === "EXECUTE" ? "EXECUTING" : "PAUSED_DRIFT";
-      setMeshState(stateStr);
-      setMeshLog(
-        (signal === "EXECUTE" ? "EXECUTE: " : "PAUSED_DRIFT: ") +
-        "i*=" + stableIStar + " interval=[" + A + "," + B + "] W=" + W +
-        " Pwin=" + (Pwin*100).toFixed(1) + "% E=" + E.toFixed(4)
-      );
-    } else {
-      setMeshState("PAUSED_DRIFT");
-    }
-
-    setMeshDom(stableIStar);
-    setMeshP(fullP);
-    setMeshM([...M]);
-    setMeshSignal(signal);
-    setMeshInterval(interval);
-  }, [meshN, meshK, meshPayout, meshEpsilon, meshDom]);
-
-  // Reset mesh engine when N or k changes
-  const resetMeshEngine = useCallback(() => {
-    meshTRef.current = Array.from({length:10},()=>Array(10).fill(0));
-    meshMRef.current = Array(10).fill(0);
-    meshBufRef.current = [];
-    meshDomStableRef.current = {digit:null, count:0};
-    setMeshState("IDLE");
-    setMeshDom(null);
-    setMeshP(null);
-    setMeshM(Array(10).fill(0));
-    setMeshInterval(null);
-    setMeshSignal("IDLE");
-    setMeshLog("Engine reset. Waiting for " + (meshN + meshK) + " ticks...");
-  }, [meshN, meshK]);
-
-  // Mesh computed vars for rendering (above return -- no IIFE)
-  const meshTotalM = meshM.reduce((s,v)=>s+v,0) || 1;
-  const meshDomRow = (meshP && meshDom !== null) ? meshP[meshDom] : null;
-  const meshTopTargets = meshDomRow
-    ? meshDomRow.map((p,j)=>({j,p})).sort((a,b)=>b.p-a.p).slice(0,5)
-    : [];
-  const meshIntervalDigits = meshInterval ? Array.from({length: meshInterval.B - meshInterval.A + 1}, (_,i) => meshInterval.A + i) : [];
-  const meshExpPct = meshInterval ? Math.max(0, Math.min(100, (meshInterval.E / meshInterval.threshold) * 100)) : 0;
-  const meshThresholdPct = 100; // threshold is always the 100% mark
-
   // Under 5 tab live computed vars
   const u5Last30 = digits.slice(-30);
   const u5Rate30 = u5Last30.length > 0 ? Math.round((u5Last30.filter(d => d < 5).length / u5Last30.length) * 100) : 0;
@@ -2437,7 +2744,185 @@ export default function DerivOracle() {
   let u5GapSinceLast = 0;
   for (let _u5j = digits.length - 1; _u5j >= 0; _u5j--) { if (digits[_u5j] < 5) break; u5GapSinceLast++; }
 
-    // Execute tab computed vars (extracted from JSX IIFE -- keep before return)
+  
+  // ── MESH ENGINE: per-tick O(1) update ────────────────────────────────────
+  const updateMeshEngine = useCallback((digit) => {
+    const N = meshN;
+    const k = meshK;
+    const alpha = 1;
+    const T = meshTRef.current;
+    const M = meshMRef.current;
+    const buf = meshBufRef.current;
+    buf.push(digit);
+    if (buf.length < N + k) {
+      if (buf.length % 20 === 0) {
+        setMeshState("IDLE");
+        setMeshLog("IDLE -- collecting: " + buf.length + " / " + (N + k) + " ticks needed");
+      }
+      return;
+    }
+    if (buf.length > N + k + 1) {
+      const sOld = buf[buf.length - N - k - 2];
+      const gOld = buf[buf.length - N - 2];
+      if (sOld !== undefined && gOld !== undefined) {
+        T[sOld][gOld] = Math.max(0, T[sOld][gOld] - 1);
+        M[sOld] = Math.max(0, M[sOld] - 1);
+      }
+      buf.shift();
+    }
+    const tLen = buf.length;
+    const sNew = buf[tLen - 1 - k];
+    const gNew = buf[tLen - 1];
+    if (sNew !== undefined && gNew !== undefined) {
+      T[sNew][gNew] += 1;
+      M[sNew] += 1;
+    }
+    // Dominant node i* with 3-tick stability filter
+    let iStar = 0; let maxM = -1;
+    for (let i = 0; i < 10; i++) {
+      if (M[i] > maxM) { maxM = M[i]; iStar = i; }
+    }
+    const stab = meshDomStableRef.current;
+    if (stab.digit === iStar) { stab.count += 1; }
+    else { stab.digit = iStar; stab.count = 1; }
+    const stableIStar = stab.count >= 3 ? iStar : (meshDomStableRef.current.digit !== null ? meshDomStableRef.current.digit : iStar);
+    // Compute smoothed P[i*,j]
+    const rowSum = T[stableIStar].reduce((s, v) => s + v, 0);
+    const P = Array(10).fill(0).map((_, j) => (T[stableIStar][j] + alpha) / (rowSum + 10 * alpha));
+    // Full P matrix for visualization
+    const fullP = Array.from({length:10}, (_, i) => {
+      const rs = T[i].reduce((s,v)=>s+v,0);
+      return Array.from({length:10}, (__, j) => (T[i][j] + alpha) / (rs + 10 * alpha));
+    });
+    // Top 3 targets
+    let top3 = P.map((p, j) => ({j, p})).sort((a, b) => b.p - a.p).slice(0, 3);
+    let A = Math.min(...top3.map(x => x.j));
+    let B = Math.max(...top3.map(x => x.j));
+    let W = B - A + 1;
+    let signal = "IDLE";
+    let interval = null;
+    if (W > 4) {
+      top3 = top3.slice(0, 2);
+      A = Math.min(...top3.map(x => x.j));
+      B = Math.max(...top3.map(x => x.j));
+      W = B - A + 1;
+      if (W > 4) {
+        signal = "PAUSED_DRIFT";
+        setMeshLog("REJECT_DIVERGENT: span > 4 after shrink. i*=" + stableIStar);
+      }
+    }
+    if (signal !== "PAUSED_DRIFT") {
+      let Pwin = 0;
+      for (let y = A; y <= B; y++) Pwin += P[y];
+      Pwin = Math.min(0.99, Pwin);
+      const E = Pwin * meshPayout - (1 - Pwin);
+      // Weighted X_pred
+      let r = Math.random() * Pwin; let Xpred = A;
+      for (let y = A; y <= B; y++) { r -= P[y]; if (r <= 0) { Xpred = y; break; } }
+      const threshold = meshEpsilon;
+      interval = { A, B, W, Xpred, Pwin: parseFloat(Pwin.toFixed(4)), E: parseFloat(E.toFixed(4)), threshold: parseFloat(threshold.toFixed(4)) };
+      signal = E > threshold ? "EXECUTE" : "PAUSED_DRIFT";
+      setMeshState(signal === "EXECUTE" ? "EXECUTING" : "PAUSED_DRIFT");
+      setMeshLog(
+        (signal === "EXECUTE" ? "EXECUTE" : "PAUSED_DRIFT") +
+        " -- i*=" + stableIStar + " [" + A + "," + B + "] W=" + W +
+        " Pwin=" + (Pwin*100).toFixed(1) + "% E=" + E.toFixed(4)
+      );
+    } else {
+      setMeshState("PAUSED_DRIFT");
+    }
+    setMeshDom(stableIStar);
+    setMeshP(fullP);
+    setMeshM([...M]);
+    setMeshSignal(signal);
+    setMeshInterval(interval);
+  }, [meshN, meshK, meshPayout, meshEpsilon]);
+
+  const resetMeshEngine = useCallback(() => {
+    meshTRef.current = Array.from({length:10},()=>Array(10).fill(0));
+    meshMRef.current = Array(10).fill(0);
+    meshBufRef.current = [];
+    meshDomStableRef.current = {digit:null, count:0};
+    setMeshState("IDLE"); setMeshDom(null); setMeshP(null);
+    setMeshM(Array(10).fill(0)); setMeshInterval(null); setMeshSignal("IDLE");
+    setMeshLog("Engine reset. Waiting for " + (meshN + meshK) + " ticks...");
+  }, [meshN, meshK]);
+
+  // Mesh computed display vars (above return)
+  const meshTotalM = meshM.reduce((s,v)=>s+v,0) || 1;
+  const meshDomRow = (meshP && meshDom !== null) ? meshP[meshDom] : null;
+  const meshTopTargets = meshDomRow ? meshDomRow.map((p,j)=>({j,p})).sort((a,b)=>b.p-a.p).slice(0,5) : [];
+  const meshIntervalDigits = meshInterval ? Array.from({length: meshInterval.B - meshInterval.A + 1}, (_,i) => meshInterval.A + i) : [];
+
+  // ── EV CALIBRATOR computed rows (Task 3) — must stay above return() ──────────
+  const evCalibBeDiffers  = calculateBreakEvenWinRate(0.95);
+  const evCalibBeMatches  = calculateBreakEvenWinRate(8.0);
+  const evCalibDWRdec     = ptStats.differsTotal > 0 ? parseFloat(ptStats.differsWR) / 100 : null;
+  const evCalibMWRdec     = ptStats.matchTotal   > 0 ? parseFloat(ptStats.matchWR)   / 100 : null;
+  const evCalibEvDiffers  = evCalibDWRdec !== null ? calculateAsymmetricEV(evCalibDWRdec, 0.95) : null;
+  const evCalibEvMatches  = evCalibMWRdec !== null ? calculateAsymmetricEV(evCalibMWRdec, 8.0)  : null;
+  const evCalibWsDiffers  = evCalibDWRdec !== null
+    ? calculateWilsonScore(Math.round(ptStats.differsTotal * evCalibDWRdec), ptStats.differsTotal, 2.576) : null;
+  const evCalibWsMatches  = evCalibMWRdec !== null
+    ? calculateWilsonScore(Math.round(ptStats.matchTotal   * evCalibMWRdec), ptStats.matchTotal,   2.576) : null;
+  const evCalibRows = [
+    {
+      label       : "DIFFERS",
+      payoutLabel : "0.95:1",
+      n           : ptStats.differsTotal,
+      ev          : evCalibEvDiffers,
+      be          : evCalibBeDiffers,
+      wr          : evCalibDWRdec,
+      ws          : evCalibWsDiffers,
+      evColor     : evCalibEvDiffers === null ? "var(--text-dim)" : evCalibEvDiffers > 0.05 ? "var(--green)" : evCalibEvDiffers > 0 ? "var(--yellow)" : "var(--red)",
+      beOk        : evCalibDWRdec !== null && evCalibDWRdec > evCalibBeDiffers,
+      wsClear     : evCalibWsDiffers !== null && evCalibWsDiffers.lower > evCalibBeDiffers,
+      evDisplay   : evCalibEvDiffers !== null ? (evCalibEvDiffers >= 0 ? "+" : "") + (evCalibEvDiffers * 100).toFixed(2) + "c" : "--",
+      beDisplay   : (evCalibBeDiffers * 100).toFixed(2) + "%",
+      wrDisplay   : evCalibDWRdec !== null ? (evCalibDWRdec * 100).toFixed(1) + "%" : "--",
+      wsDisplay   : evCalibWsDiffers ? "[" + (evCalibWsDiffers.lower * 100).toFixed(1) + "%, " + (evCalibWsDiffers.upper * 100).toFixed(1) + "%]" : "--",
+      wsNote      : evCalibWsDiffers ? (evCalibWsDiffers.lower > evCalibBeDiffers
+        ? "CI lower bound " + (evCalibWsDiffers.lower * 100).toFixed(1) + "% exceeds break-even -- EV positive at 99% confidence"
+        : "CI lower bound " + (evCalibWsDiffers.lower * 100).toFixed(1) + "% does not clear break-even -- insufficient evidence") : null,
+    },
+    {
+      label       : "MATCHES",
+      payoutLabel : "8.0:1",
+      n           : ptStats.matchTotal,
+      ev          : evCalibEvMatches,
+      be          : evCalibBeMatches,
+      wr          : evCalibMWRdec,
+      ws          : evCalibWsMatches,
+      evColor     : evCalibEvMatches === null ? "var(--text-dim)" : evCalibEvMatches > 0.05 ? "var(--green)" : evCalibEvMatches > 0 ? "var(--yellow)" : "var(--red)",
+      beOk        : evCalibMWRdec !== null && evCalibMWRdec > evCalibBeMatches,
+      wsClear     : evCalibWsMatches !== null && evCalibWsMatches.lower > evCalibBeMatches,
+      evDisplay   : evCalibEvMatches !== null ? (evCalibEvMatches >= 0 ? "+" : "") + (evCalibEvMatches * 100).toFixed(2) + "c" : "--",
+      beDisplay   : (evCalibBeMatches * 100).toFixed(2) + "%",
+      wrDisplay   : evCalibMWRdec !== null ? (evCalibMWRdec * 100).toFixed(1) + "%" : "--",
+      wsDisplay   : evCalibWsMatches ? "[" + (evCalibWsMatches.lower * 100).toFixed(1) + "%, " + (evCalibWsMatches.upper * 100).toFixed(1) + "%]" : "--",
+      wsNote      : evCalibWsMatches ? (evCalibWsMatches.lower > evCalibBeMatches
+        ? "CI lower bound " + (evCalibWsMatches.lower * 100).toFixed(1) + "% exceeds break-even -- EV positive at 99% confidence"
+        : "CI lower bound " + (evCalibWsMatches.lower * 100).toFixed(1) + "% does not clear break-even -- insufficient evidence") : null,
+    },
+  ];
+
+  // ── VALIDATION ENGINE computed display vars (Task 8) ────────────────────────
+  const valN           = labN;
+  const valMinN        = 50000;
+  const valUnlock      = valN >= 1000;  // show engine at 1k, reliable at 50k
+  const valReliable    = valN >= valMinN;
+  const valPct         = Math.min(100, Math.round((valN / valMinN) * 100));
+  const valStatusColor = !validationResult ? "var(--text-dim)"
+    : validationResult.status === "VALIDATED" ? "var(--green)"
+    : validationResult.status === "REJECTED"  ? "var(--red)"
+    : "var(--yellow)";
+  const valStatusLabel = !validationResult ? "AWAITING RUN"
+    : validationResult.status;
+  const valPartColors  = validationResult ? validationResult.partitions.map(p =>
+    p.passes ? "var(--green)" : "var(--red)"
+  ) : ["var(--text-dim)", "var(--text-dim)", "var(--text-dim)"];
+
+  // Execute tab computed vars (extracted from JSX IIFE -- keep before return)
   const execColdDigit = hotCold.cold.length > 0 ? hotCold.cold[0] : null;
   const execHotDigit  = hotCold.hot.length  > 0 ? hotCold.hot[0]  : null;
   const execWins   = execTradesRef.current.filter(t => t.status === "WIN").length;
@@ -4065,7 +4550,7 @@ export default function DerivOracle() {
               <div style={{ fontSize: 10, color: "var(--text-dim)", lineHeight: 1.7, marginBottom: 14, padding: "8px 10px",
                 background: "var(--bg2)", borderRadius: 3, borderLeft: "2px solid var(--text-dim)" }}>
                 Passive tick accumulator + rigorous statistical tests. No trading recommendations attached.
-                A confirmed signal requires p &lt; 0.05 across multiple tests at n &gt;= 50,000 ticks.
+                A confirmed signal requires p &lt; 0.005 (FWER Bonferroni-corrected) across multiple tests at n &gt;= 50,000 ticks.
                 If tests return clean, no predictor can add edge beyond the base rate.
               </div>
 
@@ -4195,7 +4680,7 @@ export default function DerivOracle() {
                 </div>
                 {labStats && labStats.trans && labTransSigRows.length > 0 && (
                   <div style={{ marginTop: 8 }}>
-                    <div style={{ fontSize: 9, color: "var(--orange)", marginBottom: 4, letterSpacing: 1 }}>FLAGGED ROWS (p &lt; 0.05):</div>
+                    <div style={{ fontSize: 9, color: "var(--orange)", marginBottom: 4, letterSpacing: 1 }}>FLAGGED ROWS (p &lt; 0.005 Bonferroni-corrected):</div>
                     {labTransSigRows.map(r => (
                       <div key={r.from} style={{ fontSize: 9, fontFamily: "var(--mono)", color: "var(--text)", padding: "2px 0", lineHeight: 1.8 }}>
                         after digit {r.from}: chi-sq = {r.chiSq}, p = {r.pValue} ({r.rowN} obs)
@@ -4205,7 +4690,7 @@ export default function DerivOracle() {
                 )}
                 {labStats && labStats.trans && labTransSigRows.length === 0 && (
                   <div style={{ fontSize: 9, color: "var(--green)", marginTop: 6 }}>
-                    No rows flagged. Serial independence confirmed at p &gt; 0.05 across all digits.
+                    No rows flagged. Serial independence confirmed at p &gt; 0.005 (Bonferroni-corrected) across all digits.
                   </div>
                 )}
                 {(!labStats || !labStats.trans) && labN < 200 && (
@@ -4246,6 +4731,346 @@ export default function DerivOracle() {
                 )}
               </div>
 
+              {/* ---- TEST 4: WALD-WOLFOWITZ RUNS TEST (Task 5) ---- */}
+              <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--bg2)", borderRadius: 4 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, textTransform: "uppercase" }}>
+                    TEST 4 -- WALD-WOLFOWITZ RUNS TEST
+                  </div>
+                  {labRunsUnlock ? (
+                    <span style={{ fontSize: 9, color: labRunsColor, fontFamily: "var(--mono)", letterSpacing: 1 }}>{labRunsVerdict}</span>
+                  ) : (
+                    <span style={{ fontSize: 9, color: "var(--text-dim)" }}>need 20 ticks</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", lineHeight: 1.7, marginBottom: 8 }}>
+                  Tests the sequential arrangement of binary states (digit &gt; 4 vs digit &lt;= 4) for global mean-reversion
+                  or trend clustering. Too few runs = clustering. Too many runs = mean-reversion.
+                  Single test -- no Bonferroni penalty applied.
+                </div>
+                {labRunsResult && labRunsResult.verdict !== "DEGENERATE" && (
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 9, lineHeight: 2, marginBottom: 8 }}>
+                    <div style={{ color: "var(--text)" }}>
+                      n={labRunsResult.n.toLocaleString()} | n1 (digit 5-9)={labRunsResult.n1.toLocaleString()} | n2 (digit 0-4)={labRunsResult.n2.toLocaleString()}
+                    </div>
+                    <div style={{ color: "var(--text)" }}>
+                      observed runs R={labRunsResult.runs.toLocaleString()} | expected mu_R={labRunsResult.muR} | sigma_R={labRunsResult.sigmaR}
+                    </div>
+                    <div style={{ color: "var(--text)" }}>
+                      Z={labRunsResult.z} | p={labRunsResult.pValue} | alpha={labRunsResult.alpha}
+                    </div>
+                    <div style={{ color: labRunsColor, marginTop: 4 }}>{labRunsResult.note}</div>
+                  </div>
+                )}
+                {labRunsResult && labRunsResult.verdict === "DEGENERATE" && (
+                  <div style={{ fontSize: 9, color: "var(--orange)", marginTop: 6 }}>{labRunsResult.note}</div>
+                )}
+                {!labRunsResult && labRunsUnlock && (
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", marginTop: 6 }}>Run Analysis to compute.</div>
+                )}
+              </div>
+
+              {/* ---- TEST 5: ACF CORRELOGRAM (Task 6) ---- */}
+              <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--bg2)", borderRadius: 4 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, textTransform: "uppercase" }}>
+                    TEST 5 -- ACF CORRELOGRAM (lags k=1..20)
+                  </div>
+                  {labAcfUnlock ? (
+                    <span style={{ fontSize: 9, color: labAcfColor, fontFamily: "var(--mono)", letterSpacing: 1 }}>{labAcfVerdict}</span>
+                  ) : (
+                    <span style={{ fontSize: 9, color: "var(--text-dim)" }}>need 50 ticks</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", lineHeight: 1.7, marginBottom: 8 }}>
+                  Measures linear dependencies at lags k=1 to 20. Detects multi-tick memory the Markov matrix misses.
+                  Red bars breach the Bartlett 99% significance hurdle (+/- 2.576/sqrt(N)).
+                </div>
+                {labAcfResult && (
+                  <>
+                    <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--text-dim)", marginBottom: 8 }}>
+                      n={labAcfResult.N.toLocaleString()} | hurdle={labAcfResult.hurdle} | flagged={labAcfResult.flaggedCount} lag(s)
+                    </div>
+                    <ResponsiveContainer width="100%" height={140}>
+                      <BarChart data={labAcfChartData} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1a1a2e" />
+                        <XAxis dataKey="k" tick={{ fill: "#4a5260", fontSize: 8 }} />
+                        <YAxis domain={[-0.05, 0.05]} tick={{ fill: "#4a5260", fontSize: 8 }} tickFormatter={v => v.toFixed(3)} width={42} />
+                        <Tooltip contentStyle={{ background: "#0c0c18", border: "1px solid #1e1e38", fontSize: 10 }}
+                          formatter={(v, n) => [v.toFixed(4), "rho"]} />
+                        <Bar dataKey="rho" radius={[2, 2, 0, 0]} isAnimationActive={false}>
+                          {labAcfChartData.map((entry, i) => (
+                            <Cell key={i} fill={entry.fill} />
+                          ))}
+                        </Bar>
+                        {/* Bartlett 99% significance hurdle lines */}
+                        <ReferenceLine y={labAcfHurdle}  stroke="var(--red)" strokeDasharray="4 4" strokeWidth={1} />
+                        <ReferenceLine y={-labAcfHurdle} stroke="var(--red)" strokeDasharray="4 4" strokeWidth={1} />
+                        <ReferenceLine y={0}             stroke="#2a2a48"    strokeWidth={1} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                    {labAcfResult.flaggedCount > 0 && (
+                      <div style={{ fontSize: 9, color: "var(--red)", marginTop: 6, letterSpacing: 1 }}>
+                        FLAGGED: {labAcfResult.flagged.map(l => "k=" + l.k + " (rho=" + l.rho + ")").join(" | ")}
+                      </div>
+                    )}
+                    {labAcfResult.flaggedCount === 0 && (
+                      <div style={{ fontSize: 9, color: "var(--green)", marginTop: 6 }}>
+                        No lags breach the Bartlett 99% hurdle. Serial independence confirmed at all lags 1-20.
+                      </div>
+                    )}
+                  </>
+                )}
+                {!labAcfResult && labAcfUnlock && (
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", marginTop: 6 }}>Run Analysis to compute.</div>
+                )}
+              </div>
+
+              {/* ---- TEST 6: SHANNON ENTROPY DRIFT (Task 7) ---- */}
+              <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--bg2)", borderRadius: 4 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, textTransform: "uppercase" }}>
+                    TEST 6 -- SHANNON ENTROPY DRIFT (block size=100)
+                  </div>
+                  {labEntUnlock ? (
+                    <span style={{ fontSize: 9, color: labEntColor, fontFamily: "var(--mono)", letterSpacing: 1 }}>{labEntVerdict}</span>
+                  ) : (
+                    <span style={{ fontSize: 9, color: "var(--text-dim)" }}>need 100 ticks</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", lineHeight: 1.7, marginBottom: 8 }}>
+                  Information density per 100-tick block. H = 3.3219 bits = maximum uniform entropy (all digits equally likely).
+                  Persistent dips below 3.0 bits indicate windows where randomness temporarily drops.
+                </div>
+                {labEntResult && (
+                  <>
+                    <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--text-dim)", marginBottom: 8 }}>
+                      {labEntResult.blocks} blocks | mean H={labEntResult.hMean} | min={labEntResult.hMin} | max={labEntResult.hMax} | low blocks (H&lt;3.0)={labEntResult.lowBlocks}
+                    </div>
+                    <ResponsiveContainer width="100%" height={130}>
+                      <AreaChart data={labEntChartData} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+                        <defs>
+                          <linearGradient id="gEnt" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%"  stopColor="#00bfff" stopOpacity={0.2} />
+                            <stop offset="95%" stopColor="#00bfff" stopOpacity={0}   />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1a1a2e" />
+                        <XAxis dataKey="block" tick={{ fill: "#4a5260", fontSize: 8 }}
+                          label={{ value: "block", position: "insideBottomRight", fill: "#4a5260", fontSize: 8 }} />
+                        <YAxis domain={[2.8, 3.4]} tick={{ fill: "#4a5260", fontSize: 8 }}
+                          tickFormatter={v => v.toFixed(2)} width={36} />
+                        <Tooltip contentStyle={{ background: "#0c0c18", border: "1px solid #1e1e38", fontSize: 10 }}
+                          formatter={(v) => [v.toFixed(4) + " bits", "H"]} />
+                        <Area type="monotone" dataKey="H" stroke="var(--cyan)" strokeWidth={1.5}
+                          fill="url(#gEnt)" dot={false} isAnimationActive={false} />
+                        {/* Maximum uniform entropy ceiling */}
+                        <ReferenceLine y={ACF_MAX_ENTROPY} stroke="var(--green)"
+                          strokeDasharray="4 4" strokeWidth={1}
+                          label={{ value: "max " + ACF_MAX_ENTROPY, fill: "var(--green)", fontSize: 8, position: "insideTopRight" }} />
+                        {/* Low-entropy warning floor */}
+                        <ReferenceLine y={3.0} stroke="var(--orange)"
+                          strokeDasharray="4 4" strokeWidth={1}
+                          label={{ value: "3.0 floor", fill: "var(--orange)", fontSize: 8, position: "insideBottomRight" }} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                    <div style={{ fontSize: 9, color: labEntColor, marginTop: 6 }}>
+                      {labEntResult.verdict === "STABLE"
+                        ? "Entropy stable across all blocks. No predictable low-randomness windows detected."
+                        : labEntResult.verdict === "MARGINAL"
+                        ? labEntResult.lowBlocks + " block(s) below 3.0 bits. Monitor but not conclusive."
+                        : labEntResult.lowBlocks + " blocks below 3.0 bits — persistent entropy drift detected."}
+                    </div>
+                  </>
+                )}
+                {!labEntResult && labEntUnlock && (
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", marginTop: 6 }}>Run Analysis to compute.</div>
+                )}
+              </div>
+
+              {/* ---- MASTER VALIDATION ENGINE (Task 8) ---- */}
+              <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--bg2)", borderRadius: 4,
+                border: "1px solid " + valStatusColor }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, textTransform: "uppercase" }}>
+                    MASTER VALIDATION ENGINE -- IS / OOS / WF
+                  </div>
+                  <span style={{ fontSize: 11, fontFamily: "var(--head)", fontWeight: 700,
+                    letterSpacing: 2, color: valStatusColor }}>{valStatusLabel}</span>
+                </div>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", lineHeight: 1.7, marginBottom: 8 }}>
+                  Splits tick data into IS (50%), OOS (30%), WF (20%). Runs Wilson CI, binomial p-value,
+                  and Discrete Sharpe on each partition. VALIDATED only when all rejection criteria pass
+                  on all three partitions sequentially. Reliable at {valMinN.toLocaleString()} ticks.
+                </div>
+                {/* Progress bar to reliable threshold */}
+                {!valReliable && (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, marginBottom: 4 }}>
+                      <span style={{ color: "var(--text-dim)" }}>Ticks toward reliable threshold</span>
+                      <span style={{ color: valReliable ? "var(--green)" : "var(--text-dim)", fontFamily: "var(--mono)" }}>
+                        {valN.toLocaleString()} / {valMinN.toLocaleString()}
+                      </span>
+                    </div>
+                    <div style={{ height: 4, background: "var(--bg3)", borderRadius: 2 }}>
+                      <div style={{ width: valPct + "%", height: "100%", background: "var(--cyan)", borderRadius: 2, transition: "width 0.5s" }} />
+                    </div>
+                  </div>
+                )}
+                {/* Run button */}
+                {valUnlock && (
+                  <button className="btn btn-green" style={{ width: "100%", padding: "8px", fontSize: 10,
+                    letterSpacing: 2, marginBottom: 10, opacity: validationRunning ? 0.5 : 1 }}
+                    onClick={() => {
+                      if (validationRunning) return;
+                      setValidationRunning(true);
+                      setTimeout(() => {
+                        try {
+                          const buf = labTickBufferRef.current;
+                          const be  = calculateBreakEvenWinRate(0.95);
+                          const res = runValidationEngine(buf, 0.95, be);
+                          setValidationResult(res);
+                        } catch(e) { console.error("[Validation]", e); }
+                        setValidationRunning(false);
+                      }, 80);
+                    }}>
+                    {validationRunning ? "RUNNING..." : "RUN VALIDATION ENGINE"}
+                  </button>
+                )}
+                {!valUnlock && (
+                  <div style={{ fontSize: 9, color: "var(--text-dim)", padding: "6px 0" }}>
+                    Need 1,000+ ticks in Lab buffer to run. Currently: {valN.toLocaleString()}.
+                  </div>
+                )}
+                {/* Results table */}
+                {validationResult && (
+                  <div>
+                    {/* Rejection flags summary */}
+                    {validationResult.status !== "INSUFFICIENT_DATA" && (
+                      <div style={{ marginBottom: 10, padding: "8px 10px", borderRadius: 3,
+                        background: validationResult.allPass ? "rgba(0,255,136,0.06)" : "rgba(255,51,102,0.08)",
+                        border: "1px solid " + valStatusColor }}>
+                        <div style={{ fontSize: 10, fontFamily: "var(--head)", letterSpacing: 2,
+                          color: valStatusColor, marginBottom: 4 }}>
+                          {validationResult.status === "VALIDATED"
+                            ? "ALL CRITERIA PASSED -- EDGE CERTIFIED"
+                            : "REJECTION CRITERIA TRIGGERED"}
+                        </div>
+                        <div style={{ fontSize: 9, color: "var(--text-dim)", fontFamily: "var(--mono)", lineHeight: 1.8 }}>
+                          {!validationResult.reliable && (
+                            <div style={{ color: "var(--yellow)" }}>
+                              WARNING: n={validationResult.n.toLocaleString()} -- below {validationResult.minRequired.toLocaleString()} tick reliable threshold. Results are indicative only.
+                            </div>
+                          )}
+                          <div>n={validationResult.n.toLocaleString()} | payout={validationResult.payout} | break-even={validationResult.breakEven}%</div>
+                          {validationResult.alphaDeck !== null && (
+                            <div style={{ color: validationResult.r4Fail ? "var(--red)" : "var(--green)" }}>
+                              Alpha Decay (dSR): {(validationResult.alphaDeck * 100).toFixed(2)}%
+                              {validationResult.r4Fail ? " EXCEEDS 25% LIMIT -- R4 FAIL" : " within 25% limit"}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {/* Per-partition table */}
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9, fontFamily: "var(--mono)" }}>
+                        <thead>
+                          <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                            {["PARTITION", "n", "WIN RATE", "EV/UNIT", "p-VALUE", "WILSON 99% CI", "SHARPE", "STATUS"].map(h => (
+                              <th key={h} style={{ padding: "5px 8px", color: "var(--text-dim)", letterSpacing: 1,
+                                textAlign: "left", fontWeight: 400, fontSize: 8 }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {validationResult.partitions && validationResult.partitions.map((p, i) => (
+                            <tr key={p.name} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)",
+                              borderLeft: "2px solid " + valPartColors[i] }}>
+                              <td style={{ padding: "6px 8px", color: valPartColors[i],
+                                fontFamily: "var(--head)", letterSpacing: 1, fontWeight: 700 }}>{p.name}</td>
+                              <td style={{ padding: "6px 8px", color: "var(--text-dim)" }}>{p.n.toLocaleString()}</td>
+                              <td style={{ padding: "6px 8px", color: p.winRate / 100 > p.r2Fail ? "var(--green)" : "var(--red)" }}>
+                                {p.winRate.toFixed(2)}%</td>
+                              <td style={{ padding: "6px 8px",
+                                color: p.ev > 0 ? "var(--green)" : "var(--red)" }}>
+                                {p.ev >= 0 ? "+" : ""}{(p.ev * 100).toFixed(2)}c</td>
+                              <td style={{ padding: "6px 8px",
+                                color: p.pValue < 0.001 ? "var(--green)" : "var(--red)" }}>
+                                {p.pValue < 0.0001 ? "<0.0001" : p.pValue.toFixed(6)}
+                                {p.r1Fail ? " R1" : ""}</td>
+                              <td style={{ padding: "6px 8px",
+                                color: !p.r2Fail ? "var(--green)" : "var(--red)" }}>
+                                [{(p.wilson.lower * 100).toFixed(1)}%, {(p.wilson.upper * 100).toFixed(1)}%]
+                                {p.r2Fail ? " R2" : ""}</td>
+                              <td style={{ padding: "6px 8px", color: p.sharpe > 0 ? "var(--green)" : "var(--red)" }}>
+                                {p.sharpe.toFixed(4)}</td>
+                              <td style={{ padding: "6px 8px", fontWeight: 700, fontFamily: "var(--head)",
+                                letterSpacing: 1, color: p.passes ? "var(--green)" : "var(--red)" }}>
+                                {p.passes ? "PASS" : "FAIL"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {/* Rejection criteria legend */}
+                    <div style={{ fontSize: 8, color: "var(--text-dim)", marginTop: 8, lineHeight: 1.8 }}>
+                      R1: p &ge; 0.001 | R2: Wilson lower bound &lt; break-even | R3: EV &le; 0 in WF | R4: Alpha Decay &gt; 25%
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ---- EV CALIBRATOR PANEL (Task 3) ---- */}
+              <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--bg2)", borderRadius: 4,
+                border: "1px solid var(--border)" }}>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>
+                  ASYMMETRIC EV CALIBRATOR
+                </div>
+                <div style={{ fontSize: 9, color: "var(--text-dim)", lineHeight: 1.7, marginBottom: 10 }}>
+                  True mathematical edge per unit staked. EV = (winRate x payout) - (1 - winRate).
+                  Break-even = 1 / (1 + payout). Wilson Score = 99% two-sided confidence interval on observed win rate.
+                </div>
+                <div>
+                  {evCalibRows.map(row => (
+                    <div key={row.label} style={{ marginBottom: 10, padding: "8px 10px", background: "var(--bg3)",
+                      borderRadius: 3, border: "1px solid " + (row.ev !== null && row.ev > 0 ? "rgba(0,255,136,0.2)" : "var(--border)") }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: 6 }}>
+                        <span style={{ fontFamily:"var(--head)", fontSize: 12, letterSpacing: 2,
+                          color: row.evColor, fontWeight: 700 }}>{row.label}</span>
+                        <span style={{ fontSize: 9, color:"var(--text-dim)" }}>payout {row.payoutLabel} | n={row.n}</span>
+                      </div>
+                      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap: 6 }}>
+                        <div style={{ textAlign:"center" }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, fontFamily:"var(--head)",
+                            color: row.evColor }}>{row.evDisplay}</div>
+                          <div style={{ fontSize: 8, color:"var(--text-dim)", letterSpacing: 1 }}>EV / UNIT</div>
+                        </div>
+                        <div style={{ textAlign:"center" }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, fontFamily:"var(--head)",
+                            color: "var(--text-dim)" }}>{row.beDisplay}</div>
+                          <div style={{ fontSize: 8, color:"var(--text-dim)", letterSpacing: 1 }}>BREAK-EVEN</div>
+                        </div>
+                        <div style={{ textAlign:"center" }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, fontFamily:"var(--head)",
+                            color: row.beOk ? "var(--green)" : "var(--red)" }}>{row.wrDisplay}</div>
+                          <div style={{ fontSize: 8, color:"var(--text-dim)", letterSpacing: 1 }}>OBSERVED WR</div>
+                        </div>
+                        <div style={{ textAlign:"center" }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, fontFamily:"var(--mono)",
+                            color: row.wsClear ? "var(--green)" : "var(--text-dim)" }}>{row.wsDisplay}</div>
+                          <div style={{ fontSize: 8, color:"var(--text-dim)", letterSpacing: 1 }}>WILSON 99% CI</div>
+                        </div>
+                      </div>
+                      {row.wsNote && (
+                        <div style={{ fontSize: 8, color: row.wsClear ? "var(--green)" : "var(--red)",
+                          marginTop: 5, letterSpacing: 1 }}>{row.wsNote}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
               {/* ---- footer note ---- */}
               <div style={{ fontSize: 9, color: "var(--text-dim)", lineHeight: 1.8, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
                 Auto-saves every 500 ticks -- data persists across sessions per symbol --
@@ -4262,8 +5087,8 @@ export default function DerivOracle() {
               <div className="mesh-config-row">
                 <div className="mesh-config-item">
                   <div className="mesh-config-label">WINDOW SIZE (N)</div>
-                  <input className="mesh-config-input" type="number" min="20" max="500" value={meshN}
-                    onChange={e => { setMeshN(parseInt(e.target.value)||100); resetMeshEngine(); }} />
+                  <input className="mesh-config-input" type="number" min="20" max="500"
+                    value={meshN} onChange={e => { setMeshN(parseInt(e.target.value)||100); resetMeshEngine(); }} />
                 </div>
                 <div className="mesh-config-item">
                   <div className="mesh-config-label">LOOKAHEAD (k)</div>
@@ -4276,176 +5101,155 @@ export default function DerivOracle() {
                 </div>
                 <div className="mesh-config-item">
                   <div className="mesh-config-label">PAYOUT MULT</div>
-                  <input className="mesh-config-input" type="number" min="0.1" max="9" step="0.05" value={meshPayout}
-                    onChange={e => setMeshPayout(parseFloat(e.target.value)||0.95)} />
+                  <input className="mesh-config-input" type="number" min="0.1" max="9" step="0.05"
+                    value={meshPayout} onChange={e => setMeshPayout(parseFloat(e.target.value)||0.95)} />
                 </div>
                 <div className="mesh-config-item">
-                  <div className="mesh-config-label">EDGE MARGIN (e)</div>
-                  <input className="mesh-config-input" type="number" min="0.01" max="0.2" step="0.01" value={meshEpsilon}
-                    onChange={e => setMeshEpsilon(parseFloat(e.target.value)||0.03)} />
+                  <div className="mesh-config-label">EDGE MARGIN</div>
+                  <input className="mesh-config-input" type="number" min="0.001" max="0.2" step="0.005"
+                    value={meshEpsilon} onChange={e => setMeshEpsilon(parseFloat(e.target.value)||0.03)} />
                 </div>
               </div>
 
-              {/* Main layout: canvas + side panel */}
+              {/* Main layout */}
               <div className="mesh-layout">
 
-                {/* ---- SVG CIRCULAR NODE GRAPH ---- */}
+                {/* SVG Circular Graph */}
                 <div className="mesh-canvas-wrap" style={{minHeight:420}}>
-                  <div style={{padding:"10px 14px", borderBottom:"1px solid var(--border)", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap"}}>
+                  <div style={{padding:"10px 14px", borderBottom:"1px solid var(--border)",
+                    display:"flex", alignItems:"center", gap:10, flexWrap:"wrap"}}>
                     <span className={"mesh-state-badge mesh-state-" + meshState}>{meshState}</span>
-                    <span className={"mesh-state-badge mesh-signal-" + meshSignal} style={{fontSize:10, padding:"4px 10px"}}>
-                      {meshSignal === "EXECUTE" ? "EXECUTE" : meshSignal === "PAUSED_DRIFT" ? "PAUSED" : "IDLE"}
+                    <span className={"mesh-state-badge mesh-signal-" + meshSignal}
+                      style={{fontSize:10, padding:"4px 10px", letterSpacing:2}}>
+                      {meshSignal}
                     </span>
                     {meshDom !== null && (
-                      <span style={{fontSize:10, color:"var(--cyan)", letterSpacing:1}}>
-                        i* = {meshDom}
-                      </span>
+                      <span style={{fontSize:10, color:"var(--cyan)", letterSpacing:1}}>i* = {meshDom}</span>
                     )}
                     {meshInterval && (
                       <span className={"mesh-span-badge " + (meshInterval.W <= 4 ? "mesh-span-ok" : "mesh-span-warn")}>
                         SPAN [{meshInterval.A},{meshInterval.B}] W={meshInterval.W}
                       </span>
                     )}
-                    <button className="btn btn-ghost" style={{fontSize:9, padding:"3px 8px", marginLeft:"auto"}} onClick={resetMeshEngine}>
-                      RESET
+                    <button className="btn btn-ghost"
+                      style={{fontSize:9, padding:"3px 10px", marginLeft:"auto"}}
+                      onClick={resetMeshEngine}>
+                      RESET ENGINE
                     </button>
                   </div>
 
-                  <svg
-                    viewBox="0 0 400 400"
-                    style={{width:"100%", maxWidth:420, display:"block", margin:"0 auto"}}
-                    xmlns="http://www.w3.org/2000/svg"
-                  >
-                    {/* Background */}
-                    <rect width="400" height="400" fill="transparent"/>
-
-                    {/* Grid rings */}
-                    {[50,100,140].map(r => (
-                      <circle key={r} cx="200" cy="200" r={r} fill="none" stroke="rgba(255,255,255,0.03)" strokeWidth="1"/>
+                  <svg viewBox="0 0 420 420"
+                    style={{width:"100%", maxWidth:460, display:"block", margin:"0 auto"}}
+                    xmlns="http://www.w3.org/2000/svg">
+                    <rect width="420" height="420" fill="transparent"/>
+                    {[55,105,150].map(r => (
+                      <circle key={r} cx="210" cy="210" r={r}
+                        fill="none" stroke="rgba(255,255,255,0.025)" strokeWidth="1"/>
                     ))}
 
-                    {/* Edges from i* */}
-                    {meshDomRow && meshDom !== null && Array.from({length:10}, (_, j) => {
-                      const Xc = 200, Yc = 200, R = 150;
-                      const fromAngle = (2 * Math.PI * meshDom / 10) - Math.PI / 2;
-                      const toAngle   = (2 * Math.PI * j / 10) - Math.PI / 2;
-                      const x1 = Xc + R * Math.cos(fromAngle);
-                      const y1 = Yc + R * Math.sin(fromAngle);
-                      const x2 = Xc + R * Math.cos(toAngle);
-                      const y2 = Yc + R * Math.sin(toAngle);
-                      const p = meshDomRow[j];
-                      const isInterval = meshIntervalDigits.includes(j);
-                      const strokeW = Math.max(0.5, p * 12);
-                      const isHovered = meshHoveredNode === j;
-                      const opacity = isInterval ? 0.9 : isHovered ? 0.6 : 0.25;
-                      const strokeColor = isInterval
-                        ? "rgba(0,191,255,0.9)"
-                        : (p > 0.15 ? "rgba(255,107,53,0.7)" : "rgba(200,208,224,0.3)");
-                      if (j === meshDom) return null;
-                      return (
-                        <line key={j}
-                          x1={x1} y1={y1} x2={x2} y2={y2}
-                          stroke={strokeColor}
-                          strokeWidth={strokeW}
-                          opacity={opacity}
-                          strokeLinecap="round"
-                        />
-                      );
-                    })}
-
-                    {/* All other edges (muted) */}
+                    {/* Muted edges from all non-dominant nodes */}
                     {meshP && meshDom !== null && Array.from({length:10}, (_, i) => {
                       if (i === meshDom) return null;
-                      return Array.from({length:10}, (__, j) => {
-                        if (i === j) return null;
-                        const p = meshP[i][j];
-                        if (p < 0.14) return null;
-                        const Xc = 200, Yc = 200, R = 150;
-                        const fromAngle = (2 * Math.PI * i / 10) - Math.PI / 2;
-                        const toAngle   = (2 * Math.PI * j / 10) - Math.PI / 2;
-                        const x1 = Xc + R * Math.cos(fromAngle);
-                        const y1 = Yc + R * Math.sin(fromAngle);
-                        const x2 = Xc + R * Math.cos(toAngle);
-                        const y2 = Yc + R * Math.sin(toAngle);
+                      return meshP[i].map((p, j) => {
+                        if (i === j || p < 0.13) return null;
+                        const Xc = 210, Yc = 210, R = 155;
+                        const x1 = Xc + R * Math.cos((2*Math.PI*i/10) - Math.PI/2);
+                        const y1 = Yc + R * Math.sin((2*Math.PI*i/10) - Math.PI/2);
+                        const x2 = Xc + R * Math.cos((2*Math.PI*j/10) - Math.PI/2);
+                        const y2 = Yc + R * Math.sin((2*Math.PI*j/10) - Math.PI/2);
                         return (
-                          <line key={i + "-" + j}
-                            x1={x1} y1={y1} x2={x2} y2={y2}
-                            stroke="rgba(40,40,80,0.6)"
-                            strokeWidth={Math.max(0.4, p * 4)}
-                            opacity={0.4}
-                            strokeLinecap="round"
-                          />
+                          <line key={i+"-"+j} x1={x1} y1={y1} x2={x2} y2={y2}
+                            stroke="rgba(42,42,72,0.5)" strokeWidth={Math.max(0.3, p*3)}
+                            opacity={0.35} strokeLinecap="round"/>
                         );
                       });
                     })}
 
+                    {/* Active edges from dominant node i* */}
+                    {meshDomRow && meshDom !== null && meshDomRow.map((p, j) => {
+                      if (j === meshDom) return null;
+                      const Xc = 210, Yc = 210, R = 155;
+                      const x1 = Xc + R * Math.cos((2*Math.PI*meshDom/10) - Math.PI/2);
+                      const y1 = Yc + R * Math.sin((2*Math.PI*meshDom/10) - Math.PI/2);
+                      const x2 = Xc + R * Math.cos((2*Math.PI*j/10) - Math.PI/2);
+                      const y2 = Yc + R * Math.sin((2*Math.PI*j/10) - Math.PI/2);
+                      const inInterval = meshIntervalDigits.includes(j);
+                      const strokeColor = inInterval
+                        ? "rgba(0,191,255,0.9)"
+                        : p > 0.14 ? "rgba(255,107,53,0.75)" : "rgba(200,208,224,0.2)";
+                      return (
+                        <line key={"dom-"+j} x1={x1} y1={y1} x2={x2} y2={y2}
+                          stroke={strokeColor}
+                          strokeWidth={Math.max(0.5, p * 14)}
+                          opacity={inInterval ? 1 : p > 0.14 ? 0.7 : 0.25}
+                          strokeLinecap="round"/>
+                      );
+                    })}
+
                     {/* Nodes */}
                     {Array.from({length:10}, (_, n) => {
-                      const Xc = 200, Yc = 200, R = 150;
-                      const angle = (2 * Math.PI * n / 10) - Math.PI / 2;
+                      const Xc = 210, Yc = 210, R = 155;
+                      const angle = (2*Math.PI*n/10) - Math.PI/2;
                       const nx = Xc + R * Math.cos(angle);
                       const ny = Yc + R * Math.sin(angle);
                       const mFrac = meshTotalM > 0 ? (meshM[n] / meshTotalM) : 0.1;
-                      const rMin = 14, rMax = 28;
-                      const nr = rMin + mFrac * (rMax - rMin) * 10;
+                      const nr = Math.max(15, Math.min(30, 15 + mFrac * 150));
                       const isDom = n === meshDom;
                       const isInterval = meshIntervalDigits.includes(n);
                       const isHov = n === meshHoveredNode;
                       const fillColor = isDom
-                        ? "rgba(0,255,136,0.25)"
-                        : isInterval
-                        ? "rgba(0,191,255,0.2)"
-                        : isHov
-                        ? "rgba(255,255,255,0.08)"
-                        : "rgba(14,14,24,0.9)";
-                      const strokeColor = isDom
-                        ? "var(--green)"
-                        : isInterval
-                        ? "var(--cyan)"
-                        : "rgba(42,42,72,0.8)";
-                      const strokeW = isDom ? 2.5 : isInterval ? 2 : 1;
+                        ? "rgba(0,255,136,0.22)"
+                        : isInterval ? "rgba(0,191,255,0.18)"
+                        : isHov ? "rgba(255,255,255,0.07)"
+                        : "rgba(12,12,20,0.95)";
+                      const strokeColor = isDom ? "#00ff88"
+                        : isInterval ? "#00bfff"
+                        : isHov ? "rgba(200,208,224,0.5)"
+                        : "rgba(42,42,72,0.9)";
                       return (
                         <g key={n}
                           onMouseEnter={() => setMeshHoveredNode(n)}
                           onMouseLeave={() => setMeshHoveredNode(null)}
-                          style={{cursor:"pointer"}}
-                        >
-                          <circle cx={nx} cy={ny} r={Math.max(14, Math.min(28, nr))}
-                            fill={fillColor} stroke={strokeColor} strokeWidth={strokeW}
-                          />
+                          style={{cursor:"pointer"}}>
                           {isDom && (
-                            <circle cx={nx} cy={ny} r={Math.max(14, Math.min(28, nr)) + 5}
-                              fill="none" stroke="rgba(0,255,136,0.3)" strokeWidth={1}
-                              strokeDasharray="3 3"
-                            />
+                            <circle cx={nx} cy={ny} r={nr+7}
+                              fill="none" stroke="rgba(0,255,136,0.25)"
+                              strokeWidth={1} strokeDasharray="3 3"/>
                           )}
-                          <text x={nx} y={ny + 1} textAnchor="middle" dominantBaseline="middle"
-                            fill={isDom ? "var(--green)" : isInterval ? "var(--cyan)" : "var(--text)"}
-                            fontSize={isDom ? 14 : 12} fontWeight={isDom || isInterval ? "700" : "400"}
-                            fontFamily="JetBrains Mono, monospace"
-                          >{n}</text>
-                          <text x={nx} y={ny + (Math.max(14, Math.min(28, nr)) + 9)} textAnchor="middle"
-                            fill="rgba(74,82,96,0.8)" fontSize="8" fontFamily="JetBrains Mono, monospace">
-                            {(meshTotalM > 0 ? ((meshM[n]/meshTotalM)*100).toFixed(0) : 0)}%
+                          <circle cx={nx} cy={ny} r={nr}
+                            fill={fillColor}
+                            stroke={strokeColor}
+                            strokeWidth={isDom ? 2.5 : isInterval ? 2 : 1}/>
+                          <text x={nx} y={ny+1} textAnchor="middle" dominantBaseline="middle"
+                            fill={isDom ? "#00ff88" : isInterval ? "#00bfff" : "#c8d0e0"}
+                            fontSize={isDom ? 15 : 12}
+                            fontWeight={isDom || isInterval ? "700" : "400"}
+                            fontFamily="JetBrains Mono, monospace">{n}</text>
+                          <text x={nx} y={ny+nr+9} textAnchor="middle"
+                            fill="rgba(74,82,96,0.8)" fontSize="8"
+                            fontFamily="JetBrains Mono, monospace">
+                            {meshTotalM > 0 ? ((meshM[n]/meshTotalM)*100).toFixed(0) : 0}%
                           </text>
                         </g>
                       );
                     })}
 
-                    {/* Center label */}
-                    <text x="200" y="193" textAnchor="middle" fill="rgba(74,82,96,0.5)"
-                      fontSize="9" fontFamily="JetBrains Mono, monospace" letterSpacing="2">TRANSITION</text>
-                    <text x="200" y="207" textAnchor="middle" fill="rgba(74,82,96,0.5)"
-                      fontSize="9" fontFamily="JetBrains Mono, monospace" letterSpacing="2">MESH</text>
+                    {/* Center labels */}
+                    <text x="210" y="203" textAnchor="middle"
+                      fill="rgba(74,82,96,0.45)" fontSize="9"
+                      fontFamily="JetBrains Mono, monospace" letterSpacing="2">TRANSITION</text>
+                    <text x="210" y="218" textAnchor="middle"
+                      fill="rgba(74,82,96,0.45)" fontSize="9"
+                      fontFamily="JetBrains Mono, monospace" letterSpacing="2">MESH</text>
 
-                    {/* Prediction interval arc */}
+                    {/* Signal label at bottom */}
                     {meshInterval && (
-                      <text x="200" y="380" textAnchor="middle"
-                        fill={meshSignal === "EXECUTE" ? "var(--green)" : "var(--orange)"}
-                        fontSize="10" fontFamily="JetBrains Mono, monospace" letterSpacing="1">
+                      <text x="210" y="405" textAnchor="middle"
+                        fill={meshSignal === "EXECUTE" ? "#00ff88" : "#ff6b35"}
+                        fontSize="9" fontFamily="JetBrains Mono, monospace" letterSpacing="1">
                         {meshSignal === "EXECUTE"
-                          ? "EXECUTE: bet digit " + meshInterval.Xpred + " (interval [" + meshInterval.A + "," + meshInterval.B + "])"
-                          : "PAUSED -- E=" + meshInterval.E.toFixed(4) + " below threshold"}
+                          ? "EXECUTE -- bet DIFFERS digit " + meshInterval.Xpred + "  interval [" + meshInterval.A + "," + meshInterval.B + "]"
+                          : "PAUSED -- E=" + meshInterval.E.toFixed(4) + " below edge threshold"}
                       </text>
                     )}
                   </svg>
@@ -4456,59 +5260,75 @@ export default function DerivOracle() {
                   </div>
                 </div>
 
-                {/* ---- SIDE PANEL ---- */}
+                {/* Side panel */}
                 <div className="mesh-side">
 
-                  {/* Dominant node info */}
+                  {/* Dominant node */}
                   <div className="panel" style={{padding:12}}>
-                    <div className="panel-title" style={{marginBottom:8}}><span className="dot dot-green"/>Dominant Node i*</div>
+                    <div className="panel-title" style={{marginBottom:8}}>
+                      <span className="dot dot-green"/>Dominant Node i*
+                    </div>
                     {meshDom !== null ? (
                       <div>
-                        <div style={{fontSize:48, fontWeight:700, color:"var(--green)", fontFamily:"var(--head)", lineHeight:1, marginBottom:4}}>
-                          {meshDom}
+                        <div style={{fontSize:52, fontWeight:700, color:"var(--green)",
+                          fontFamily:"var(--head)", lineHeight:1, marginBottom:6}}>{meshDom}</div>
+                        <div style={{fontSize:10, color:"var(--text-dim)", marginBottom:2}}>
+                          Marginal freq: {((meshM[meshDom]/meshTotalM)*100).toFixed(1)}%
                         </div>
-                        <div style={{fontSize:10, color:"var(--text-dim)"}}>
-                          Marginal freq: {meshTotalM > 0 ? ((meshM[meshDom]/meshTotalM)*100).toFixed(1) : 0}%
-                        </div>
-                        <div style={{fontSize:10, color:"var(--text-dim)"}}>
-                          Stability: {meshDomStableRef.current.count >= 3 ? "STABLE" : "SETTLING (" + meshDomStableRef.current.count + "/3)"}
+                        <div style={{fontSize:10, color: meshDomStableRef.current.count >= 3 ? "var(--green)" : "var(--yellow)"}}>
+                          {meshDomStableRef.current.count >= 3 ? "STABLE" : "SETTLING (" + meshDomStableRef.current.count + "/3 ticks)"}
                         </div>
                       </div>
                     ) : (
-                      <div style={{color:"var(--text-dim)", fontSize:11}}>Collecting ticks...</div>
+                      <div style={{color:"var(--text-dim)", fontSize:11, padding:"10px 0"}}>
+                        Collecting ticks...
+                      </div>
                     )}
                   </div>
 
-                  {/* Top transitions */}
+                  {/* Top transitions list */}
                   <div className="panel" style={{padding:12}}>
-                    <div className="panel-title" style={{marginBottom:8}}><span className="dot dot-cyan"/>Top Transitions from i*={meshDom !== null ? meshDom : "?"}</div>
+                    <div className="panel-title" style={{marginBottom:8}}>
+                      <span className="dot dot-cyan"/>
+                      Transitions from i*={meshDom !== null ? meshDom : "?"}
+                    </div>
                     <div className="mesh-target-list">
-                      <div className="mesh-target-row" style={{fontSize:8, letterSpacing:1, color:"var(--text-dim)", borderBottom:"1px solid var(--border2)"}}>
-                        <span>DIGIT</span><span>PROB BAR</span><span>PROB%</span><span>IN?</span>
+                      <div className="mesh-target-row"
+                        style={{fontSize:8, letterSpacing:1, color:"var(--text-dim)",
+                          borderBottom:"1px solid var(--border2)"}}>
+                        <span>DIGIT</span><span>BAR</span><span>PROB</span><span>IN?</span>
                       </div>
                       {meshTopTargets.length === 0 && (
-                        <div style={{padding:"10px", fontSize:10, color:"var(--text-dim)"}}>No data yet</div>
+                        <div style={{padding:"10px", fontSize:10, color:"var(--text-dim)"}}>
+                          No data yet
+                        </div>
                       )}
                       {meshTopTargets.map((t, rank) => {
                         const inInterval = meshIntervalDigits.includes(t.j);
                         return (
-                          <div key={t.j} className={"mesh-target-row " + (rank === 0 ? "active" : inInterval ? "in-interval" : "")}>
-                            <span style={{fontSize:14, fontWeight:700, color: rank === 0 ? "var(--green)" : inInterval ? "var(--cyan)" : "var(--text)", fontFamily:"var(--head)"}}>
+                          <div key={t.j}
+                            className={"mesh-target-row " + (rank===0 ? "active" : inInterval ? "in-interval" : "")}>
+                            <span style={{fontSize:16, fontWeight:700,
+                              color: rank===0 ? "var(--green)" : inInterval ? "var(--cyan)" : "var(--text)",
+                              fontFamily:"var(--head)"}}>
                               {t.j}
                             </span>
                             <div>
                               <div className="mesh-bar-mini">
                                 <div className="mesh-bar-mini-fill" style={{
-                                  width: (t.p * 500) + "%",
-                                  background: rank === 0 ? "var(--green)" : inInterval ? "var(--cyan)" : "var(--border2)"
+                                  width: Math.min(100, t.p * 600) + "%",
+                                  background: rank===0 ? "var(--green)"
+                                    : inInterval ? "var(--cyan)" : "var(--border2)"
                                 }}/>
                               </div>
                             </div>
-                            <span style={{fontSize:10, fontFamily:"var(--mono)", color: rank === 0 ? "var(--green)" : "var(--text-dim)"}}>
+                            <span style={{fontSize:10, fontFamily:"var(--mono)",
+                              color: rank===0 ? "var(--green)" : "var(--text-dim)"}}>
                               {(t.p*100).toFixed(1)}%
                             </span>
-                            <span style={{fontSize:9, color: inInterval ? "var(--cyan)" : "var(--text-dim)"}}>
-                              {inInterval ? "YES" : "—"}
+                            <span style={{fontSize:9,
+                              color: inInterval ? "var(--cyan)" : "var(--text-dim)"}}>
+                              {inInterval ? "YES" : "--"}
                             </span>
                           </div>
                         );
@@ -4518,81 +5338,127 @@ export default function DerivOracle() {
 
                   {/* Span indicator */}
                   <div className="mesh-expectancy-meter">
-                    <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6}}>
-                      <span style={{fontSize:9, color:"var(--text-dim)", letterSpacing:2}}>SPAN WIDTH</span>
+                    <div style={{display:"flex", justifyContent:"space-between",
+                      alignItems:"center", marginBottom:6}}>
+                      <span style={{fontSize:9, color:"var(--text-dim)", letterSpacing:2}}>
+                        SPAN WIDTH
+                      </span>
                       {meshInterval ? (
-                        <span className={"mesh-span-badge " + (meshInterval.W <= 4 ? "mesh-span-ok" : "mesh-span-warn")}>
-                          W = {meshInterval.W} {meshInterval.W <= 4 ? "OK" : "WIDE"}
+                        <span className={"mesh-span-badge " +
+                          (meshInterval.W <= 4 ? "mesh-span-ok" : "mesh-span-warn")}>
+                          W = {meshInterval.W} {meshInterval.W <= 4 ? "OK" : "TOO WIDE"}
                         </span>
                       ) : <span style={{fontSize:10, color:"var(--text-dim)"}}>--</span>}
                     </div>
-                    <div style={{fontSize:9, color:"var(--text-dim)", marginTop:4}}>
-                      Interval: {meshInterval ? "[" + meshInterval.A + ", " + meshInterval.B + "]" : "--"}
+                    <div style={{fontSize:10, color:"var(--text-dim)", lineHeight:1.8}}>
+                      Interval: <span style={{color:"var(--cyan)", fontWeight:700}}>
+                        {meshInterval ? "[" + meshInterval.A + ", " + meshInterval.B + "]" : "--"}
+                      </span>
                     </div>
-                    <div style={{fontSize:9, color:"var(--text-dim)"}}>
-                      X_pred: <span style={{color:"var(--cyan)", fontWeight:700}}>{meshInterval ? meshInterval.Xpred : "--"}</span>
+                    <div style={{fontSize:10, color:"var(--text-dim)"}}>
+                      X_pred: <span style={{color:"var(--green)", fontWeight:700, fontSize:16,
+                        fontFamily:"var(--head)"}}>
+                        {meshInterval ? meshInterval.Xpred : "--"}
+                      </span>
                     </div>
                   </div>
 
                   {/* Expectancy meter */}
                   <div className="mesh-expectancy-meter">
                     <div style={{display:"flex", justifyContent:"space-between", marginBottom:6}}>
-                      <span style={{fontSize:9, color:"var(--text-dim)", letterSpacing:2}}>EXPECTANCY</span>
-                      <span style={{fontSize:9, color: meshInterval && meshInterval.E > 0 ? "var(--green)" : "var(--red)", fontWeight:700}}>
-                        {meshInterval ? (meshInterval.E >= 0 ? "+" : "") + meshInterval.E.toFixed(4) : "--"}
+                      <span style={{fontSize:9, color:"var(--text-dim)", letterSpacing:2}}>
+                        REAL EXPECTANCY
+                      </span>
+                      <span style={{fontSize:12, fontWeight:700,
+                        color: meshInterval && meshInterval.E > 0 ? "var(--green)" : "var(--red)"}}>
+                        {meshInterval
+                          ? (meshInterval.E >= 0 ? "+" : "") + meshInterval.E.toFixed(4)
+                          : "--"}
                       </span>
                     </div>
-                    <div style={{height:8, background:"var(--border)", borderRadius:4, overflow:"hidden", marginBottom:4}}>
+                    <div style={{height:8, background:"var(--border)", borderRadius:4,
+                      overflow:"hidden", marginBottom:6}}>
                       <div style={{
                         height:"100%", borderRadius:4, transition:"width 0.4s",
-                        width: meshInterval ? Math.min(100, Math.max(0, (meshInterval.E / (meshInterval.threshold * 2 + 0.001)) * 100)) + "%" : "0%",
+                        width: meshInterval
+                          ? Math.min(100, Math.max(0,
+                              ((meshInterval.E + 0.5) / 1.0) * 100)) + "%"
+                          : "0%",
                         background: meshSignal === "EXECUTE" ? "var(--green)" : "var(--orange)"
                       }}/>
                     </div>
-                    <div style={{display:"flex", justifyContent:"space-between", fontSize:9, color:"var(--text-dim)"}}>
-                      <span>P_win: {meshInterval ? (meshInterval.Pwin*100).toFixed(1) + "%" : "--"}</span>
-                      <span>threshold: {meshInterval ? meshInterval.threshold.toFixed(4) : "--"}</span>
+                    <div style={{display:"flex", justifyContent:"space-between",
+                      fontSize:9, color:"var(--text-dim)"}}>
+                      <span>
+                        P_win: {meshInterval ? (meshInterval.Pwin*100).toFixed(1) + "%" : "--"}
+                      </span>
+                      <span>
+                        edge: {meshInterval ? "+" + meshInterval.threshold.toFixed(3) : "--"}
+                      </span>
+                    </div>
+                    <div style={{marginTop:6, fontSize:9,
+                      color: meshSignal === "EXECUTE" ? "var(--green)"
+                        : meshSignal === "PAUSED_DRIFT" ? "var(--orange)" : "var(--text-dim)",
+                      fontFamily:"var(--head)", letterSpacing:2, textAlign:"center",
+                      padding:"4px 8px", borderRadius:2,
+                      background: meshSignal === "EXECUTE" ? "rgba(0,255,136,0.08)"
+                        : meshSignal === "PAUSED_DRIFT" ? "rgba(255,107,53,0.08)" : "transparent"}}>
+                      {meshSignal === "EXECUTE" ? "E = Pwin x payout - (1-Pwin) > threshold"
+                        : meshSignal === "PAUSED_DRIFT" ? "Edge insufficient -- holding"
+                        : "Awaiting data"}
                     </div>
                   </div>
 
-                  {/* Scientific disclaimer */}
-                  <div style={{fontSize:9, color:"var(--text-dim)", lineHeight:1.7, padding:"8px 10px",
-                    background:"var(--bg2)", borderRadius:3, borderLeft:"2px solid var(--text-dim)"}}>
-                    Model assumes P(d_t | d_t-k) Markov property.
-                    Laplace smoothing prevents zero-probability traps.
-                    EXECUTE signal = E > 0 with required edge margin.
-                    This does NOT guarantee profit — edge is theoretical.
+                  {/* Scientific note */}
+                  <div style={{fontSize:9, color:"var(--text-dim)", lineHeight:1.75,
+                    padding:"8px 10px", background:"var(--bg2)", borderRadius:3,
+                    borderLeft:"2px solid var(--text-dim)"}}>
+                    Markov P(d_t | d_t-k). Laplace smoothing prevents zero-prob traps.
+                    EXECUTE only fires when E = Pwin x payout - (1-Pwin) exceeds edge margin.
+                    This is a signal layer -- NOT a guarantee of profit.
                   </div>
                 </div>
               </div>
 
-              {/* Transition matrix heatmap */}
+              {/* Full 10x10 Probability Matrix */}
               {meshP && meshDom !== null && (
                 <div className="panel" style={{marginBottom:12}}>
-                  <div className="panel-title"><span className="dot dot-cyan"/>Full Transition Probability Matrix P[i,j] — Highlighted row = i*={meshDom}</div>
+                  <div className="panel-title">
+                    <span className="dot dot-cyan"/>
+                    Full P[i,j] Transition Matrix -- Row i* = {meshDom} highlighted
+                  </div>
                   <div style={{overflowX:"auto"}}>
-                    <div className="mesh-matrix-grid" style={{minWidth:320}}>
-                      <div className="mesh-matrix-cell mesh-matrix-header" style={{color:"var(--text-dim)"}}>i\j</div>
+                    <div className="mesh-matrix-grid" style={{minWidth:330}}>
+                      <div className="mesh-matrix-cell mesh-matrix-header" style={{color:"var(--text-dim)"}}>
+                        i \ j
+                      </div>
                       {[0,1,2,3,4,5,6,7,8,9].map(j => (
-                        <div key={j} className="mesh-matrix-cell mesh-matrix-header" style={{color:"var(--cyan)"}}>{j}</div>
+                        <div key={j} className="mesh-matrix-cell mesh-matrix-header"
+                          style={{color: meshIntervalDigits.includes(j) ? "var(--cyan)" : "var(--text-dim)"}}>
+                          {j}
+                        </div>
                       ))}
                       {[0,1,2,3,4,5,6,7,8,9].map(i => {
                         const isDomRow = i === meshDom;
                         return [
                           <div key={"h"+i} className="mesh-matrix-cell mesh-matrix-header"
-                            style={{color: isDomRow ? "var(--green)" : "var(--orange)"}}>{i}</div>,
+                            style={{color: isDomRow ? "var(--green)" : "var(--orange)"}}>
+                            {i}
+                          </div>,
                           ...[0,1,2,3,4,5,6,7,8,9].map(j => {
                             const p = meshP[i][j];
                             const isTarget = isDomRow && meshIntervalDigits.includes(j);
-                            const intensity = Math.min(1, p / 0.2);
                             const bg = isDomRow
                               ? isTarget
-                                ? "rgba(0,191,255," + (intensity*0.7 + 0.1) + ")"
-                                : "rgba(0,255,136," + (intensity*0.5 + 0.05) + ")"
-                              : "rgba(255,107,53," + (intensity*0.3) + ")";
+                                ? "rgba(0,191,255," + Math.min(0.75, p*5 + 0.1) + ")"
+                                : "rgba(0,255,136," + Math.min(0.55, p*4 + 0.03) + ")"
+                              : "rgba(255,107,53," + Math.min(0.28, p*2.5) + ")";
                             return (
                               <div key={i+"-"+j} className="mesh-matrix-cell"
-                                style={{background:bg, color: isDomRow && p > 0.13 ? (isTarget ? "var(--cyan)" : "var(--green)") : "var(--text-dim)"}}>
+                                style={{background:bg,
+                                  color: isDomRow && p > 0.12
+                                    ? (isTarget ? "var(--cyan)" : "var(--green)")
+                                    : "var(--text-dim)"}}>
                                 {(p*100).toFixed(0)}
                               </div>
                             );
@@ -4601,27 +5467,29 @@ export default function DerivOracle() {
                       })}
                     </div>
                   </div>
-                  <div style={{fontSize:9, color:"var(--text-dim)", marginTop:8}}>
-                    Green row = dominant node i*. Cyan cells = interval targets [A,B]. Values = P(next|from) as %.
+                  <div style={{fontSize:9, color:"var(--text-dim)", marginTop:8, lineHeight:1.7}}>
+                    Green row = i* dominant node. Cyan cells = active interval [A,B].
+                    Values are P(next digit | from digit) as %. Laplace-smoothed.
                   </div>
                 </div>
               )}
 
-              {/* Tick requirement notice */}
+              {/* Tick collection progress */}
               {digits.length < meshN + meshK && (
-                <div className="panel" style={{textAlign:"center", padding:"20px"}}>
-                  <div style={{fontSize:13, color:"var(--yellow)", fontFamily:"var(--head)", letterSpacing:2, marginBottom:8}}>
-                    COLLECTING TICKS
+                <div className="panel" style={{textAlign:"center", padding:"24px 20px"}}>
+                  <div style={{fontSize:14, color:"var(--yellow)", fontFamily:"var(--head)",
+                    letterSpacing:3, marginBottom:8}}>COLLECTING TICKS</div>
+                  <div style={{fontSize:11, color:"var(--text-dim)", marginBottom:10}}>
+                    {digits.length} / {meshN + meshK} ticks received (need N+k={meshN + meshK})
                   </div>
-                  <div style={{fontSize:11, color:"var(--text-dim)"}}>
-                    {digits.length} / {meshN + meshK} ticks received
-                  </div>
-                  <div style={{height:6, background:"var(--border)", borderRadius:3, margin:"10px auto", maxWidth:200}}>
+                  <div style={{height:6, background:"var(--border)", borderRadius:3,
+                    margin:"0 auto 10px", maxWidth:240}}>
                     <div style={{height:"100%", borderRadius:3, background:"var(--yellow)",
-                      width: Math.min(100, (digits.length/(meshN + meshK))*100) + "%", transition:"width 0.5s"}}/>
+                      width: Math.min(100, (digits.length/(meshN+meshK))*100) + "%",
+                      transition:"width 0.5s"}}/>
                   </div>
-                  <div style={{fontSize:10, color:"var(--text-dim)"}}>
-                    Connect live stream to begin. Mesh analysis requires N+k={meshN + meshK} ticks minimum.
+                  <div style={{fontSize:9, color:"var(--text-dim)"}}>
+                    Connect live stream or load demo data to begin mesh analysis
                   </div>
                 </div>
               )}
