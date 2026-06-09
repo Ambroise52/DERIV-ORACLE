@@ -1615,6 +1615,141 @@ const CustomTooltip = ({ active, payload, label }) => {
   );
 };
 
+// ── EXECUTION LAYER: MATCHES MODE ───────────────────────────────────────────
+// Pure function — no hooks, no side effects.
+// Reads ranked probability vector from Layer C. Outputs signal data only.
+// Does NOT compute expectancy. Does NOT decide to trade.
+function runMatchesMode(ranked, rowSample, dominanceThreshold, minProb) {
+  const MIN_SAMPLE = 20;
+  const UNIFORM_BASELINE = 0.10;
+
+  // Guard: not enough ranked data
+  if (!ranked || ranked.length < 2) {
+    return {
+      mode: "MATCHES", pass: false, failReason: "INSUFFICIENT_RANKED_DATA",
+      predictedDigit: null, P1: null, P2: null,
+      dominanceGap: null, confidenceRaw: 0
+    };
+  }
+
+  // Guard: row has too few observations — Laplace smoothing dominates
+  if (rowSample < MIN_SAMPLE) {
+    return {
+      mode: "MATCHES", pass: false, failReason: "SAMPLE_FAIL",
+      predictedDigit: ranked[0].j,
+      P1: parseFloat(ranked[0].p.toFixed(4)),
+      P2: parseFloat(ranked[1].p.toFixed(4)),
+      dominanceGap: parseFloat((ranked[0].p - ranked[1].p).toFixed(4)),
+      confidenceRaw: 0
+    };
+  }
+
+  const P1 = ranked[0].p;
+  const P2 = ranked[1].p;
+  const dominanceGap  = parseFloat((P1 - P2).toFixed(4));
+  // Raw confidence: how far P1 is above the uniform baseline, scaled to [0,1]
+  const confidenceRaw = parseFloat(
+    Math.max(0, Math.min(1, (P1 - UNIFORM_BASELINE) / (1 - UNIFORM_BASELINE))).toFixed(4)
+  );
+
+  // Condition A: top digit must be clearly separated from second
+  if (dominanceGap < dominanceThreshold) {
+    return {
+      mode: "MATCHES", pass: false, failReason: "DOMINANCE_FAIL",
+      predictedDigit: ranked[0].j, P1, P2, dominanceGap, confidenceRaw
+    };
+  }
+
+  // Condition B: top digit probability must clear the minimum threshold
+  if (P1 < minProb) {
+    return {
+      mode: "MATCHES", pass: false, failReason: "MIN_PROB_FAIL",
+      predictedDigit: ranked[0].j, P1, P2, dominanceGap, confidenceRaw
+    };
+  }
+
+  // All conditions met
+  return {
+    mode: "MATCHES", pass: true, failReason: null,
+    predictedDigit: ranked[0].j,
+    P1: parseFloat(P1.toFixed(4)),
+    P2: parseFloat(P2.toFixed(4)),
+    dominanceGap,
+    confidenceRaw
+  };
+}
+
+// ── EXECUTION LAYER: DIFFERS MODE ────────────────────────────────────────────
+// Pure function — no hooks, no side effects.
+// Builds an avoid cluster from top-K digits, selects safest outside target.
+// Does NOT compute expectancy. Does NOT decide to trade.
+function runDiffersMode(ranked, rowSample, K, minClusterMass) {
+  const MIN_SAMPLE = 20;
+
+  // Guard: not enough ranked data to form a cluster
+  if (!ranked || ranked.length < K + 1) {
+    return {
+      mode: "DIFFERS", pass: false, failReason: "INSUFFICIENT_RANKED_DATA",
+      avoidCluster: [], clusterMass: 0,
+      targetDigit: null, targetP: null, confidenceRaw: 0
+    };
+  }
+
+  // Guard: row has too few observations
+  if (rowSample < MIN_SAMPLE) {
+    return {
+      mode: "DIFFERS", pass: false, failReason: "SAMPLE_FAIL",
+      avoidCluster: [], clusterMass: 0,
+      targetDigit: null, targetP: null, confidenceRaw: 0
+    };
+  }
+
+  // Build the avoid cluster: top-K most probable digits
+  const topK         = ranked.slice(0, K);
+  const avoidCluster = topK.map(x => x.j);
+  const clusterMass  = parseFloat(topK.reduce((s, x) => s + x.p, 0).toFixed(4));
+
+  // Condition A: cluster must genuinely concentrate probability
+  if (clusterMass < minClusterMass) {
+    return {
+      mode: "DIFFERS", pass: false, failReason: "CLUSTER_MASS_FAIL",
+      avoidCluster, clusterMass,
+      targetDigit: null, targetP: null,
+      confidenceRaw: parseFloat(clusterMass.toFixed(4))
+    };
+  }
+
+  // Build outside set: all digits NOT in avoid cluster, sorted ascending by prob
+  const outside = ranked.slice(K).sort((a, b) => a.p - b.p);
+
+  // Guard: outside set empty (should never happen when K < 10)
+  if (outside.length === 0) {
+    return {
+      mode: "DIFFERS", pass: false, failReason: "NO_OUTSIDE_DIGITS",
+      avoidCluster, clusterMass,
+      targetDigit: null, targetP: null, confidenceRaw: 0
+    };
+  }
+
+  // Select the digit with the lowest probability outside the cluster
+  // Lowest probability = least likely to appear = safest DIFFERS target
+  const targetDigit  = outside[0].j;
+  const targetP      = parseFloat(outside[0].p.toFixed(4));
+
+  // Raw confidence: the cluster mass itself — higher mass = more probability
+  // concentrated away from our target = stronger DIFFERS signal
+  const confidenceRaw = parseFloat(Math.min(1, clusterMass).toFixed(4));
+
+  return {
+    mode: "DIFFERS", pass: true, failReason: null,
+    avoidCluster,
+    clusterMass,
+    targetDigit,
+    targetP,
+    confidenceRaw
+  };
+}
+
 // ── MAIN COMPONENT ────────────────────────────────────────────────────────────
 export default function DerivOracle() {
   const [ticks, setTicks] = useState([]);
@@ -1703,6 +1838,19 @@ export default function DerivOracle() {
   const [meshK,          setMeshK]          = useState(1);
   const [meshPayout,     setMeshPayout]     = useState(0.95);
   const [meshEpsilon,    setMeshEpsilon]    = useState(0.03);
+  // ── EXECUTION LAYER STATE ─────────────────────────────────────────────────
+  const [meshMode,              setMeshMode]              = useState("DIFFERS");
+  // "DIFFERS" | "MATCHES"
+  const [meshDiffersK,          setMeshDiffersK]          = useState(3);
+  // top-K digits to form the avoid cluster (2 or 3)
+  const [meshDominanceThreshold,setMeshDominanceThreshold]= useState(0.04);
+  // MATCHES: min required gap between P1 and P2
+  const [meshMinProb,           setMeshMinProb]           = useState(0.14);
+  // MATCHES: min absolute probability for top digit (40% above uniform 0.10)
+  const [meshMinClusterMass,    setMeshMinClusterMass]    = useState(0.35);
+  // DIFFERS: min combined probability of the avoid cluster
+  const [meshMatchesResult,     setMeshMatchesResult]     = useState(null);
+  const [meshDiffersResult,     setMeshDiffersResult]     = useState(null);
   const [meshLog,        setMeshLog]        = useState("Waiting for live ticks (need N+k ticks)...");
   const [meshHoveredNode,setMeshHoveredNode]= useState(null);
 
@@ -2836,7 +2984,22 @@ export default function DerivOracle() {
     setMeshM([...M]);
     setMeshSignal(signal);
     setMeshInterval(interval);
-  }, [meshN, meshK, meshPayout, meshEpsilon]);
+
+    // ── EXECUTION LAYER: run both modes independently on every tick ──────────
+    // ranked and rowSample are derived from the same P and T already computed above
+    const execRanked    = P.map((p, j) => ({j, p})).sort((a, b) => b.p - a.p);
+    const execRowSample = T[stableIStar].reduce((s, v) => s + v, 0);
+
+    const matchesOut = runMatchesMode(
+      execRanked, execRowSample, meshDominanceThreshold, meshMinProb
+    );
+    const differsOut = runDiffersMode(
+      execRanked, execRowSample, meshDiffersK, meshMinClusterMass
+    );
+
+    setMeshMatchesResult(matchesOut);
+    setMeshDiffersResult(differsOut);
+  }, [meshN, meshK, meshPayout, meshEpsilon, meshDominanceThreshold, meshMinProb, meshDiffersK, meshMinClusterMass]);
 
   const resetMeshEngine = useCallback(() => {
     meshTRef.current = Array.from({length:10},()=>Array(10).fill(0));
@@ -2853,6 +3016,26 @@ export default function DerivOracle() {
   const meshDomRow = (meshP && meshDom !== null) ? meshP[meshDom] : null;
   const meshTopTargets = meshDomRow ? meshDomRow.map((p,j)=>({j,p})).sort((a,b)=>b.p-a.p).slice(0,5) : [];
   const meshIntervalDigits = meshInterval ? Array.from({length: meshInterval.B - meshInterval.A + 1}, (_,i) => meshInterval.A + i) : [];
+
+  // ── EXECUTION LAYER computed display vars ────────────────────────────────
+  // Active mode result (whichever mode is selected)
+  const execLayerOutput  = meshMode === "MATCHES" ? meshMatchesResult : meshDiffersResult;
+  const execLayerPass    = execLayerOutput ? execLayerOutput.pass : false;
+  // MATCHES display vars
+  const matchesPredDigit = meshMatchesResult ? meshMatchesResult.predictedDigit : null;
+  const matchesP1        = meshMatchesResult ? meshMatchesResult.P1 : null;
+  const matchesDomGap    = meshMatchesResult ? meshMatchesResult.dominanceGap : null;
+  const matchesConfRaw   = meshMatchesResult ? meshMatchesResult.confidenceRaw : 0;
+  const matchesPass      = meshMatchesResult ? meshMatchesResult.pass : false;
+  const matchesFailReason= meshMatchesResult ? (meshMatchesResult.failReason || "") : "";
+  // DIFFERS display vars
+  const differsTarget    = meshDiffersResult ? meshDiffersResult.targetDigit : null;
+  const differsTargetP   = meshDiffersResult ? meshDiffersResult.targetP : null;
+  const differsCluster   = meshDiffersResult ? meshDiffersResult.avoidCluster : [];
+  const differsClusterMass = meshDiffersResult ? meshDiffersResult.clusterMass : 0;
+  const differsConfRaw   = meshDiffersResult ? meshDiffersResult.confidenceRaw : 0;
+  const differsPass      = meshDiffersResult ? meshDiffersResult.pass : false;
+  const differsFailReason= meshDiffersResult ? (meshDiffersResult.failReason || "") : "";
 
   // ── EV CALIBRATOR computed rows (Task 3) — must stay above return() ──────────
   const evCalibBeDiffers  = calculateBreakEvenWinRate(0.95);
@@ -5083,6 +5266,205 @@ export default function DerivOracle() {
           {/* ---- MESH TAB: DIGIT TRANSITION MESH ENGINE ---- */}
           {activeTab === "mesh" && (
             <div>
+              {/* ---- EXECUTION LAYER: Mode Selector ---- */}
+              <div style={{display:"flex", gap:8, marginBottom:10}}>
+                <button
+                  className={"btn" + (meshMode === "DIFFERS" ? " btn-cyan" : " btn-ghost")}
+                  style={{flex:1, padding:"10px", fontSize:11, letterSpacing:2,
+                    fontFamily:"var(--head)", borderColor:"var(--cyan)"}}
+                  onClick={() => setMeshMode("DIFFERS")}>
+                  DIFFERS MODE
+                </button>
+                <button
+                  className={"btn" + (meshMode === "MATCHES" ? " btn-orange" : " btn-ghost")}
+                  style={{flex:1, padding:"10px", fontSize:11, letterSpacing:2,
+                    fontFamily:"var(--head)", borderColor:"var(--orange)"}}
+                  onClick={() => setMeshMode("MATCHES")}>
+                  MATCHES MODE
+                </button>
+              </div>
+
+              {/* ---- EXECUTION LAYER: Dual output panels ---- */}
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:12}}>
+
+                {/* MATCHES OUTPUT */}
+                <div style={{padding:14, borderRadius:4,
+                  border: meshMode === "MATCHES"
+                    ? "2px solid var(--orange)" : "1px solid var(--border)",
+                  background: meshMode === "MATCHES"
+                    ? "rgba(255,107,53,0.05)" : "rgba(0,0,0,0.2)",
+                  opacity: meshMode === "MATCHES" ? 1 : 0.55}}>
+                  <div style={{fontSize:9, letterSpacing:3, color:"var(--orange)",
+                    fontFamily:"var(--head)", marginBottom:10,
+                    display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+                    <span>MATCHES LAYER</span>
+                    <span style={{padding:"2px 8px", borderRadius:2, fontSize:9,
+                      background: matchesPass ? "rgba(0,255,136,0.12)" : "rgba(255,51,102,0.12)",
+                      border: "1px solid " + (matchesPass ? "var(--green)" : "var(--red)"),
+                      color: matchesPass ? "var(--green)" : "var(--red)"}}>
+                      {matchesPass ? "PASS" : "FAIL"}
+                    </span>
+                  </div>
+                  <div style={{marginBottom:8}}>
+                    <div style={{fontSize:9, color:"var(--text-dim)", letterSpacing:1,
+                      marginBottom:3}}>PREDICTED DIGIT</div>
+                    <div style={{fontSize:44, fontWeight:700, color:"var(--orange)",
+                      fontFamily:"var(--head)", lineHeight:1}}>
+                      {matchesPredDigit !== null ? matchesPredDigit : "--"}
+                    </div>
+                  </div>
+                  <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:6,
+                    fontSize:9, color:"var(--text-dim)"}}>
+                    <div>
+                      <div style={{letterSpacing:1, marginBottom:2}}>P1 (top prob)</div>
+                      <div style={{fontSize:13, fontWeight:700,
+                        color: matchesP1 && matchesP1 >= 0.14 ? "var(--orange)" : "var(--red)"}}>
+                        {matchesP1 !== null ? (matchesP1*100).toFixed(1) + "%" : "--"}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{letterSpacing:1, marginBottom:2}}>GAP (P1-P2)</div>
+                      <div style={{fontSize:13, fontWeight:700,
+                        color: matchesDomGap && matchesDomGap >= 0.04 ? "var(--green)" : "var(--red)"}}>
+                        {matchesDomGap !== null ? matchesDomGap.toFixed(4) : "--"}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{letterSpacing:1, marginBottom:2}}>CONF (raw)</div>
+                      <div style={{fontSize:13, fontWeight:700, color:"var(--text)"}}>
+                        {(matchesConfRaw*100).toFixed(1) + "%"}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{letterSpacing:1, marginBottom:2}}>STATUS</div>
+                      <div style={{fontSize:10, fontWeight:700,
+                        color: matchesPass ? "var(--green)" : "var(--red)"}}>
+                        {matchesPass ? "SIGNAL" : matchesFailReason || "--"}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{marginTop:8, fontSize:9, color:"var(--text-dim)",
+                    lineHeight:1.6, borderTop:"1px solid var(--border)", paddingTop:6}}>
+                    Thresholds: P1 &gt;= {(meshMinProb*100).toFixed(0)}% | gap &gt;= {meshDominanceThreshold.toFixed(2)}
+                  </div>
+                </div>
+
+                {/* DIFFERS OUTPUT */}
+                <div style={{padding:14, borderRadius:4,
+                  border: meshMode === "DIFFERS"
+                    ? "2px solid var(--cyan)" : "1px solid var(--border)",
+                  background: meshMode === "DIFFERS"
+                    ? "rgba(0,191,255,0.05)" : "rgba(0,0,0,0.2)",
+                  opacity: meshMode === "DIFFERS" ? 1 : 0.55}}>
+                  <div style={{fontSize:9, letterSpacing:3, color:"var(--cyan)",
+                    fontFamily:"var(--head)", marginBottom:10,
+                    display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+                    <span>DIFFERS LAYER</span>
+                    <span style={{padding:"2px 8px", borderRadius:2, fontSize:9,
+                      background: differsPass ? "rgba(0,255,136,0.12)" : "rgba(255,51,102,0.12)",
+                      border: "1px solid " + (differsPass ? "var(--green)" : "var(--red)"),
+                      color: differsPass ? "var(--green)" : "var(--red)"}}>
+                      {differsPass ? "PASS" : "FAIL"}
+                    </span>
+                  </div>
+                  <div style={{marginBottom:8}}>
+                    <div style={{fontSize:9, color:"var(--text-dim)", letterSpacing:1,
+                      marginBottom:3}}>TARGET DIGIT (bet DIFFERS on)</div>
+                    <div style={{fontSize:44, fontWeight:700, color:"var(--cyan)",
+                      fontFamily:"var(--head)", lineHeight:1}}>
+                      {differsTarget !== null ? differsTarget : "--"}
+                    </div>
+                    <div style={{fontSize:9, color:"var(--text-dim)", marginTop:2}}>
+                      P = {differsTargetP !== null ? (differsTargetP*100).toFixed(1)+"%" : "--"} (lowest outside cluster)
+                    </div>
+                  </div>
+                  <div style={{marginBottom:8}}>
+                    <div style={{fontSize:9, color:"var(--text-dim)", letterSpacing:1,
+                      marginBottom:4}}>AVOID CLUSTER (top-{meshDiffersK})</div>
+                    <div style={{display:"flex", gap:5, flexWrap:"wrap"}}>
+                      {differsCluster.length > 0 ? differsCluster.map(d => (
+                        <span key={d} style={{width:28, height:28, display:"flex",
+                          alignItems:"center", justifyContent:"center",
+                          borderRadius:3, fontSize:12, fontWeight:700,
+                          background:"rgba(255,51,102,0.12)",
+                          border:"1px solid rgba(255,51,102,0.4)",
+                          color:"var(--red)"}}>
+                          {d}
+                        </span>
+                      )) : <span style={{color:"var(--text-dim)", fontSize:10}}>--</span>}
+                    </div>
+                  </div>
+                  <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:6,
+                    fontSize:9, color:"var(--text-dim)"}}>
+                    <div>
+                      <div style={{letterSpacing:1, marginBottom:2}}>CLUSTER MASS</div>
+                      <div style={{fontSize:13, fontWeight:700,
+                        color: differsClusterMass >= 0.35 ? "var(--green)" : "var(--red)"}}>
+                        {(differsClusterMass*100).toFixed(1) + "%"}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{letterSpacing:1, marginBottom:2}}>STATUS</div>
+                      <div style={{fontSize:10, fontWeight:700,
+                        color: differsPass ? "var(--green)" : "var(--red)"}}>
+                        {differsPass ? "SIGNAL" : differsFailReason || "--"}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{marginTop:8, fontSize:9, color:"var(--text-dim)",
+                    lineHeight:1.6, borderTop:"1px solid var(--border)", paddingTop:6}}>
+                    K = {meshDiffersK} | min cluster mass &gt;= {(meshMinClusterMass*100).toFixed(0)}%
+                  </div>
+                </div>
+              </div>
+
+              {/* Execution layer param controls */}
+              <div style={{display:"grid", gridTemplateColumns:"repeat(4,1fr)",
+                gap:8, marginBottom:12, padding:10,
+                background:"var(--bg2)", border:"1px solid var(--border)", borderRadius:4}}>
+                <div>
+                  <div style={{fontSize:8, color:"var(--text-dim)", letterSpacing:2,
+                    marginBottom:4}}>DIFFERS K</div>
+                  <select style={{width:"100%", background:"transparent",
+                    border:"none", color:"var(--cyan)", fontFamily:"var(--mono)",
+                    fontSize:13, fontWeight:700, outline:"none", cursor:"pointer"}}
+                    value={meshDiffersK} onChange={e => setMeshDiffersK(parseInt(e.target.value))}>
+                    <option value={2}>2</option>
+                    <option value={3}>3</option>
+                  </select>
+                </div>
+                <div>
+                  <div style={{fontSize:8, color:"var(--text-dim)", letterSpacing:2,
+                    marginBottom:4}}>DOM. THRESHOLD</div>
+                  <input type="number" min="0.01" max="0.15" step="0.01"
+                    style={{width:"100%", background:"transparent", border:"none",
+                      color:"var(--orange)", fontFamily:"var(--mono)",
+                      fontSize:13, fontWeight:700, outline:"none"}}
+                    value={meshDominanceThreshold}
+                    onChange={e => setMeshDominanceThreshold(parseFloat(e.target.value)||0.04)} />
+                </div>
+                <div>
+                  <div style={{fontSize:8, color:"var(--text-dim)", letterSpacing:2,
+                    marginBottom:4}}>MIN PROB (P1)</div>
+                  <input type="number" min="0.10" max="0.30" step="0.01"
+                    style={{width:"100%", background:"transparent", border:"none",
+                      color:"var(--orange)", fontFamily:"var(--mono)",
+                      fontSize:13, fontWeight:700, outline:"none"}}
+                    value={meshMinProb}
+                    onChange={e => setMeshMinProb(parseFloat(e.target.value)||0.14)} />
+                </div>
+                <div>
+                  <div style={{fontSize:8, color:"var(--text-dim)", letterSpacing:2,
+                    marginBottom:4}}>MIN CLUSTER</div>
+                  <input type="number" min="0.25" max="0.60" step="0.01"
+                    style={{width:"100%", background:"transparent", border:"none",
+                      color:"var(--cyan)", fontFamily:"var(--mono)",
+                      fontSize:13, fontWeight:700, outline:"none"}}
+                    value={meshMinClusterMass}
+                    onChange={e => setMeshMinClusterMass(parseFloat(e.target.value)||0.35)} />
+                </div>
+              </div>
+
               {/* Config row */}
               <div className="mesh-config-row">
                 <div className="mesh-config-item">
