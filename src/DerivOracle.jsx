@@ -1750,6 +1750,117 @@ function runDiffersMode(ranked, rowSample, K, minClusterMass) {
   };
 }
 
+// ── CONFIDENCE FILTER ───────────────────────────────────────────────────────
+// Pure function. Sits after execution layer. Validates signal quality.
+// Does NOT trade. Returns pass/fail + score + reasons only.
+function runConfidenceFilter(
+  P,              // probability vector P[i*], length 10
+  rowSample,      // sum(T[i*][*]) — raw observation count
+  ranked,         // sorted [{j,p}] descending
+  iStarHistory,   // last M values of dominant node
+  top1History,    // last M values of ranked[0].j
+  params          // { minSamples, deviationThreshold, maxChangeRate,
+                  //   minRankConsistency, maxEntropyRatio, passThreshold }
+) {
+  const {
+    minSamples        = 30,
+    deviationThreshold = 0.04,
+    maxChangeRate      = 0.30,
+    minRankConsistency = 0.60,
+    maxEntropyRatio    = 0.97,
+    passThreshold      = 0.75,
+  } = params || {};
+
+  const WEIGHTS = {
+    sampleSize:   0.20,
+    deviation:    0.25,
+    domStability: 0.20,
+    rankStability:0.20,
+    entropy:      0.15,
+  };
+
+  const checks = {};
+  const failReasons = [];
+  let score = 0;
+  let sampleFailed = false;
+
+  // ── CHECK 1: Sample Size ──────────────────────────────────────────────────
+  const c1Pass = rowSample >= minSamples;
+  checks.sampleSize = { pass: c1Pass, value: rowSample, threshold: minSamples };
+  if (c1Pass) {
+    score += WEIGHTS.sampleSize;
+  } else {
+    failReasons.push("SAMPLE_TOO_SMALL");
+    sampleFailed = true;
+  }
+
+  // ── CHECK 2: Deviation from Uniform ──────────────────────────────────────
+  const P1        = ranked.length > 0 ? ranked[0].p : 0.10;
+  const deviation = parseFloat((P1 - 0.10).toFixed(4));
+  const c2Pass    = deviation >= deviationThreshold;
+  checks.deviation = { pass: c2Pass, value: deviation, threshold: deviationThreshold };
+  if (c2Pass) { score += WEIGHTS.deviation; }
+  else        { failReasons.push("DEVIATION_TOO_LOW"); }
+
+  // ── CHECK 3: Dominance Stability ─────────────────────────────────────────
+  let c3Pass = true;
+  let changeRate = 0;
+  if (iStarHistory.length >= 3) {
+    let changes = 0;
+    for (let i = 1; i < iStarHistory.length; i++) {
+      if (iStarHistory[i] !== iStarHistory[i-1]) changes++;
+    }
+    changeRate = parseFloat((changes / Math.max(1, iStarHistory.length - 1)).toFixed(4));
+    c3Pass = changeRate <= maxChangeRate;
+  }
+  checks.domStability = { pass: c3Pass, value: changeRate, threshold: maxChangeRate };
+  if (c3Pass) { score += WEIGHTS.domStability; }
+  else        { failReasons.push("ISTAR_UNSTABLE"); }
+
+  // ── CHECK 4: Rank Stability ───────────────────────────────────────────────
+  let c4Pass = true;
+  let top1Consistency = 1.0;
+  if (top1History.length >= 3) {
+    const freq = {};
+    top1History.forEach(d => { freq[d] = (freq[d] || 0) + 1; });
+    const modeCount = Math.max(...Object.values(freq));
+    top1Consistency = parseFloat((modeCount / top1History.length).toFixed(4));
+    c4Pass = top1Consistency >= minRankConsistency;
+  }
+  checks.rankStability = { pass: c4Pass, value: top1Consistency, threshold: minRankConsistency };
+  if (c4Pass) { score += WEIGHTS.rankStability; }
+  else        { failReasons.push("RANK_UNSTABLE"); }
+
+  // ── CHECK 5: Shannon Entropy ──────────────────────────────────────────────
+  const H_UNIFORM = Math.log2(10); // 3.3219 bits
+  let entropy = 0;
+  for (let j = 0; j < 10; j++) {
+    const p = P[j] > 0 ? P[j] : 1e-10;
+    entropy -= p * Math.log2(p);
+  }
+  const H_norm = parseFloat((entropy / H_UNIFORM).toFixed(4));
+  const c5Pass = H_norm <= maxEntropyRatio;
+  checks.entropy = { pass: c5Pass, value: H_norm, threshold: maxEntropyRatio };
+  if (c5Pass) { score += WEIGHTS.entropy; }
+  else        { failReasons.push("ENTROPY_TOO_HIGH"); }
+
+  // ── FINAL SCORE ───────────────────────────────────────────────────────────
+  // Hard override: if sample fails, cap score at 0.20
+  const finalScore = sampleFailed
+    ? Math.min(0.20, parseFloat(score.toFixed(4)))
+    : parseFloat(score.toFixed(4));
+
+  const pass = !sampleFailed && finalScore >= passThreshold;
+
+  return {
+    pass,
+    confidence_score: finalScore,
+    failReasons,
+    checks,
+    meta: { rowSample, P1, deviation, changeRate, top1Consistency, H_norm }
+  };
+}
+
 // ── MAIN COMPONENT ────────────────────────────────────────────────────────────
 export default function DerivOracle() {
   const [ticks, setTicks] = useState([]);
@@ -1851,6 +1962,23 @@ export default function DerivOracle() {
   // DIFFERS: min combined probability of the avoid cluster
   const [meshMatchesResult,     setMeshMatchesResult]     = useState(null);
   const [meshDiffersResult,     setMeshDiffersResult]     = useState(null);
+  // Mode-aware payout (DIFFERS=0.95, MATCHES=8.0) — auto-switches with mode
+  const [meshMatchesPayout,     setMeshMatchesPayout]     = useState(8.0);
+  const [meshDiffersPayout,     setMeshDiffersPayout]     = useState(0.95);
+  // Per-mode loading state — shows brief flash when switching modes
+  const [meshModeLoading,       setMeshModeLoading]       = useState(false);
+  // Rolling history buffers for confidence filter (refs — no re-render cost)
+  const meshIStarHistoryRef = useRef([]);   // last 10 i* values
+  const meshTop1HistoryRef  = useRef([]);   // last 10 top-ranked digit values
+  // Confidence filter output
+  const [meshFilterResult,      setMeshFilterResult]      = useState(null);
+  // Confidence filter parameters (all user-configurable)
+  const [meshMinSamples,        setMeshMinSamples]        = useState(30);
+  const [meshDeviationThreshold,setMeshDeviationThreshold]= useState(0.04);
+  const [meshMaxChangeRate,     setMeshMaxChangeRate]     = useState(0.30);
+  const [meshMinRankConsistency,setMeshMinRankConsistency]= useState(0.60);
+  const [meshMaxEntropyRatio,   setMeshMaxEntropyRatio]   = useState(0.97);
+  const [meshFilterPassThreshold,setMeshFilterPassThreshold]= useState(0.75);
   const [meshLog,        setMeshLog]        = useState("Waiting for live ticks (need N+k ticks)...");
   const [meshHoveredNode,setMeshHoveredNode]= useState(null);
 
@@ -2990,6 +3118,16 @@ export default function DerivOracle() {
     const execRanked    = P.map((p, j) => ({j, p})).sort((a, b) => b.p - a.p);
     const execRowSample = T[stableIStar].reduce((s, v) => s + v, 0);
 
+    // ── Update rolling history buffers (cap at 10) ────────────────────────
+    const iStarBuf = meshIStarHistoryRef.current;
+    iStarBuf.push(stableIStar);
+    if (iStarBuf.length > 10) iStarBuf.shift();
+
+    const top1Buf = meshTop1HistoryRef.current;
+    if (execRanked.length > 0) top1Buf.push(execRanked[0].j);
+    if (top1Buf.length > 10) top1Buf.shift();
+
+    // ── Run both execution modes independently ────────────────────────────
     const matchesOut = runMatchesMode(
       execRanked, execRowSample, meshDominanceThreshold, meshMinProb
     );
@@ -2997,17 +3135,49 @@ export default function DerivOracle() {
       execRanked, execRowSample, meshDiffersK, meshMinClusterMass
     );
 
+    // ── Run confidence filter on every tick ───────────────────────────────
+    const filterOut = runConfidenceFilter(
+      P, execRowSample, execRanked,
+      [...iStarBuf], [...top1Buf],
+      {
+        minSamples:         meshMinSamples,
+        deviationThreshold: meshDeviationThreshold,
+        maxChangeRate:      meshMaxChangeRate,
+        minRankConsistency: meshMinRankConsistency,
+        maxEntropyRatio:    meshMaxEntropyRatio,
+        passThreshold:      meshFilterPassThreshold,
+      }
+    );
+
+    // ── Mode-aware expectancy using correct payout per mode ───────────────
+    // DIFFERS: payout 0.95 | MATCHES: payout 8.0
+    // Override meshInterval E with mode-correct value when interval exists
+    if (interval) {
+      const activePayout = meshDiffersPayout; // interval logic uses DIFFERS by default
+      const correctedE   = parseFloat((interval.Pwin * activePayout - (1 - interval.Pwin)).toFixed(4));
+      interval.E         = correctedE;
+      interval.payout    = activePayout;
+    }
+
     setMeshMatchesResult(matchesOut);
     setMeshDiffersResult(differsOut);
-  }, [meshN, meshK, meshPayout, meshEpsilon, meshDominanceThreshold, meshMinProb, meshDiffersK, meshMinClusterMass]);
+    setMeshFilterResult(filterOut);
+  }, [meshN, meshK, meshPayout, meshEpsilon,
+      meshDominanceThreshold, meshMinProb, meshDiffersK, meshMinClusterMass,
+      meshDiffersPayout, meshMatchesPayout,
+      meshMinSamples, meshDeviationThreshold, meshMaxChangeRate,
+      meshMinRankConsistency, meshMaxEntropyRatio, meshFilterPassThreshold]);
 
   const resetMeshEngine = useCallback(() => {
     meshTRef.current = Array.from({length:10},()=>Array(10).fill(0));
     meshMRef.current = Array(10).fill(0);
     meshBufRef.current = [];
     meshDomStableRef.current = {digit:null, count:0};
+    meshIStarHistoryRef.current = [];
+    meshTop1HistoryRef.current  = [];
     setMeshState("IDLE"); setMeshDom(null); setMeshP(null);
     setMeshM(Array(10).fill(0)); setMeshInterval(null); setMeshSignal("IDLE");
+    setMeshMatchesResult(null); setMeshDiffersResult(null); setMeshFilterResult(null);
     setMeshLog("Engine reset. Waiting for " + (meshN + meshK) + " ticks...");
   }, [meshN, meshK]);
 
@@ -3036,6 +3206,21 @@ export default function DerivOracle() {
   const differsConfRaw   = meshDiffersResult ? meshDiffersResult.confidenceRaw : 0;
   const differsPass      = meshDiffersResult ? meshDiffersResult.pass : false;
   const differsFailReason= meshDiffersResult ? (meshDiffersResult.failReason || "") : "";
+
+  // ── CONFIDENCE FILTER computed display vars ─────────────────────────────
+  const filterScore   = meshFilterResult ? meshFilterResult.confidence_score : 0;
+  const filterPass    = meshFilterResult ? meshFilterResult.pass : false;
+  const filterReasons = meshFilterResult ? meshFilterResult.failReasons : [];
+  const filterChecks  = meshFilterResult ? meshFilterResult.checks : null;
+  const filterMeta    = meshFilterResult ? meshFilterResult.meta : null;
+  const filterScorePct = Math.round(filterScore * 100);
+
+  // Mode-aware payout label + MATCHES expectancy (uses 8.0 payout)
+  const activePayout = meshMode === "MATCHES" ? meshMatchesPayout : meshDiffersPayout;
+  const matchesExpectancy = (matchesP1 !== null)
+    ? parseFloat((matchesP1 * meshMatchesPayout - (1 - matchesP1)).toFixed(4)) : null;
+  const differsExpectancy = (differsTargetP !== null)
+    ? parseFloat(((1 - differsClusterMass) * meshDiffersPayout - differsClusterMass).toFixed(4)) : null;
 
   // ── EV CALIBRATOR computed rows (Task 3) — must stay above return() ──────────
   const evCalibBeDiffers  = calculateBreakEvenWinRate(0.95);
@@ -5267,21 +5452,58 @@ export default function DerivOracle() {
           {activeTab === "mesh" && (
             <div>
               {/* ---- EXECUTION LAYER: Mode Selector ---- */}
-              <div style={{display:"flex", gap:8, marginBottom:10}}>
-                <button
-                  className={"btn" + (meshMode === "DIFFERS" ? " btn-cyan" : " btn-ghost")}
-                  style={{flex:1, padding:"10px", fontSize:11, letterSpacing:2,
-                    fontFamily:"var(--head)", borderColor:"var(--cyan)"}}
-                  onClick={() => setMeshMode("DIFFERS")}>
-                  DIFFERS MODE
-                </button>
-                <button
-                  className={"btn" + (meshMode === "MATCHES" ? " btn-orange" : " btn-ghost")}
-                  style={{flex:1, padding:"10px", fontSize:11, letterSpacing:2,
-                    fontFamily:"var(--head)", borderColor:"var(--orange)"}}
-                  onClick={() => setMeshMode("MATCHES")}>
-                  MATCHES MODE
-                </button>
+              <div style={{marginBottom:10}}>
+                <div style={{display:"flex", gap:8, marginBottom:6}}>
+                  <button
+                    className={"btn" + (meshMode === "DIFFERS" ? " btn-cyan" : " btn-ghost")}
+                    style={{flex:1, padding:"11px", fontSize:11, letterSpacing:2,
+                      fontFamily:"var(--head)", borderColor:"var(--cyan)",
+                      position:"relative", overflow:"hidden"}}
+                    onClick={() => {
+                      if (meshMode === "DIFFERS") return;
+                      setMeshModeLoading(true);
+                      setMeshMode("DIFFERS");
+                      setTimeout(() => setMeshModeLoading(false), 400);
+                    }}>
+                    {meshMode === "DIFFERS" && meshModeLoading
+                      ? "LOADING..." : "DIFFERS MODE"}
+                    {meshMode === "DIFFERS" && (
+                      <span style={{position:"absolute", bottom:0, left:0, height:2,
+                        width:"100%", background:"var(--cyan)", opacity:0.6}}/>
+                    )}
+                  </button>
+                  <button
+                    className={"btn" + (meshMode === "MATCHES" ? " btn-orange" : " btn-ghost")}
+                    style={{flex:1, padding:"11px", fontSize:11, letterSpacing:2,
+                      fontFamily:"var(--head)", borderColor:"var(--orange)",
+                      position:"relative", overflow:"hidden"}}
+                    onClick={() => {
+                      if (meshMode === "MATCHES") return;
+                      setMeshModeLoading(true);
+                      setMeshMode("MATCHES");
+                      setTimeout(() => setMeshModeLoading(false), 400);
+                    }}>
+                    {meshMode === "MATCHES" && meshModeLoading
+                      ? "LOADING..." : "MATCHES MODE"}
+                    {meshMode === "MATCHES" && (
+                      <span style={{position:"absolute", bottom:0, left:0, height:2,
+                        width:"100%", background:"var(--orange)", opacity:0.6}}/>
+                    )}
+                  </button>
+                </div>
+                <div style={{display:"flex", justifyContent:"space-between",
+                  fontSize:9, color:"var(--text-dim)", padding:"4px 8px",
+                  background:"var(--bg2)", borderRadius:3, border:"1px solid var(--border)"}}>
+                  <span>
+                    {meshMode === "DIFFERS"
+                      ? "DIFFERS: bet digit will NOT appear -- payout " + meshDiffersPayout + "x -- break-even 47.4%"
+                      : "MATCHES: bet digit WILL appear -- payout " + meshMatchesPayout + "x -- break-even 11.1%"}
+                  </span>
+                  <span style={{color: meshMode === "DIFFERS" ? "var(--cyan)" : "var(--orange)",
+                    fontWeight:700}}>
+                    {meshMode === "DIFFERS" ? "DIFFERS ACTIVE" : "MATCHES ACTIVE"}
+                  </span>
+                </div>
               </div>
 
               {/* ---- EXECUTION LAYER: Dual output panels ---- */}
@@ -5347,6 +5569,20 @@ export default function DerivOracle() {
                     lineHeight:1.6, borderTop:"1px solid var(--border)", paddingTop:6}}>
                     Thresholds: P1 &gt;= {(meshMinProb*100).toFixed(0)}% | gap &gt;= {meshDominanceThreshold.toFixed(2)}
                   </div>
+                  {/* MATCHES expectancy using 8.0x payout */}
+                  {matchesPass && matchesExpectancy !== null && (
+                    <div style={{marginTop:8, padding:"6px 8px", borderRadius:3,
+                      background: matchesExpectancy > 0 ? "rgba(0,255,136,0.08)" : "rgba(255,51,102,0.08)",
+                      border:"1px solid " + (matchesExpectancy > 0 ? "var(--green)" : "var(--red)")}}>
+                      <div style={{fontSize:9, color:"var(--text-dim)", marginBottom:2}}>
+                        EXPECTANCY (E = P1 x 8.0 - (1-P1))
+                      </div>
+                      <div style={{fontSize:14, fontWeight:700,
+                        color: matchesExpectancy > 0 ? "var(--green)" : "var(--red)"}}>
+                        {matchesExpectancy >= 0 ? "+" : ""}{matchesExpectancy.toFixed(4)}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* DIFFERS OUTPUT */}
@@ -5415,6 +5651,121 @@ export default function DerivOracle() {
                     lineHeight:1.6, borderTop:"1px solid var(--border)", paddingTop:6}}>
                     K = {meshDiffersK} | min cluster mass &gt;= {(meshMinClusterMass*100).toFixed(0)}%
                   </div>
+                  {/* DIFFERS expectancy using 0.95x payout */}
+                  {differsPass && differsExpectancy !== null && (
+                    <div style={{marginTop:8, padding:"6px 8px", borderRadius:3,
+                      background: differsExpectancy > 0 ? "rgba(0,191,255,0.08)" : "rgba(255,51,102,0.08)",
+                      border:"1px solid " + (differsExpectancy > 0 ? "var(--cyan)" : "var(--red)")}}>
+                      <div style={{fontSize:9, color:"var(--text-dim)", marginBottom:2}}>
+                        EXPECTANCY (E = (1-clusterMass) x 0.95 - clusterMass)
+                      </div>
+                      <div style={{fontSize:14, fontWeight:700,
+                        color: differsExpectancy > 0 ? "var(--cyan)" : "var(--red)"}}>
+                        {differsExpectancy >= 0 ? "+" : ""}{differsExpectancy.toFixed(4)}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* ---- CONFIDENCE FILTER PANEL ---- */}
+              <div style={{marginBottom:12, padding:14, borderRadius:4,
+                border: "1px solid " + (filterPass ? "var(--green)" : filterScore > 0.5 ? "var(--yellow)" : "var(--border)"),
+                background: filterPass ? "rgba(0,255,136,0.03)" : "rgba(0,0,0,0.2)"}}>
+
+                {/* Header */}
+                <div style={{display:"flex", alignItems:"center", justifyContent:"space-between",
+                  marginBottom:10, flexWrap:"wrap", gap:8}}>
+                  <div style={{display:"flex", alignItems:"center", gap:10}}>
+                    <span style={{fontSize:9, letterSpacing:3, color:"var(--text-dim)",
+                      fontFamily:"var(--head)"}}>CONFIDENCE FILTER</span>
+                    <span style={{padding:"3px 10px", borderRadius:2, fontSize:10,
+                      fontWeight:700, letterSpacing:2,
+                      background: filterPass ? "rgba(0,255,136,0.12)" : "rgba(255,51,102,0.10)",
+                      border:"1px solid " + (filterPass ? "var(--green)" : "var(--red)"),
+                      color: filterPass ? "var(--green)" : "var(--red)"}}>
+                      {filterPass ? "VALIDATED" : "REJECTED"}
+                    </span>
+                    {filterReasons.length > 0 && filterReasons.map(r => (
+                      <span key={r} style={{padding:"2px 6px", borderRadius:2, fontSize:8,
+                        background:"rgba(255,51,102,0.08)",
+                        border:"1px solid rgba(255,51,102,0.3)",
+                        color:"var(--red)", letterSpacing:1}}>
+                        {r}
+                      </span>
+                    ))}
+                  </div>
+                  {/* Score meter */}
+                  <div style={{display:"flex", alignItems:"center", gap:8}}>
+                    <div style={{fontSize:9, color:"var(--text-dim)"}}>SCORE</div>
+                    <div style={{width:100, height:8, background:"var(--border)", borderRadius:4, overflow:"hidden"}}>
+                      <div style={{height:"100%", borderRadius:4, transition:"width 0.4s",
+                        width: filterScorePct + "%",
+                        background: filterPass ? "var(--green)" : filterScore > 0.5 ? "var(--yellow)" : "var(--red)"}}/>
+                    </div>
+                    <div style={{fontSize:13, fontWeight:700, fontFamily:"var(--head)",
+                      color: filterPass ? "var(--green)" : filterScore > 0.5 ? "var(--yellow)" : "var(--red)"}}>
+                      {filterScorePct}%
+                    </div>
+                  </div>
+                </div>
+
+                {/* 5 check results */}
+                {filterChecks && (
+                  <div style={{display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:6,
+                    marginBottom:10}}>
+                    {[
+                      ["SAMPLE", filterChecks.sampleSize,
+                       filterMeta ? filterMeta.rowSample + " obs" : "--"],
+                      ["DEVIATION", filterChecks.deviation,
+                       filterMeta ? (filterMeta.deviation*100).toFixed(1) + "pp" : "--"],
+                      ["DOM STAB", filterChecks.domStability,
+                       filterMeta ? (filterMeta.changeRate*100).toFixed(0) + "% chg" : "--"],
+                      ["RANK STAB", filterChecks.rankStability,
+                       filterMeta ? (filterMeta.top1Consistency*100).toFixed(0) + "% cons" : "--"],
+                      ["ENTROPY", filterChecks.entropy,
+                       filterMeta ? filterMeta.H_norm.toFixed(3) : "--"],
+                    ].map(([label, chk, val]) => (
+                      <div key={label} style={{padding:"6px 8px", borderRadius:3,
+                        border:"1px solid " + (chk && chk.pass ? "rgba(0,255,136,0.3)" : "rgba(255,51,102,0.3)"),
+                        background: chk && chk.pass ? "rgba(0,255,136,0.05)" : "rgba(255,51,102,0.05)"}}>
+                        <div style={{fontSize:7, letterSpacing:2, color:"var(--text-dim)",
+                          marginBottom:3}}>{label}</div>
+                        <div style={{fontSize:11, fontWeight:700,
+                          color: chk && chk.pass ? "var(--green)" : "var(--red)"}}>
+                          {val}
+                        </div>
+                        <div style={{fontSize:8, color: chk && chk.pass ? "var(--green)" : "var(--red)",
+                          marginTop:2, letterSpacing:1}}>
+                          {chk && chk.pass ? "PASS" : "FAIL"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Filter param controls */}
+                <div style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8}}>
+                  {[
+                    ["MIN SAMPLES", meshMinSamples, setMeshMinSamples, 10, 100, 1],
+                    ["MAX CHG RATE", meshMaxChangeRate, setMeshMaxChangeRate, 0.10, 0.60, 0.05],
+                    ["MIN RANK CONS", meshMinRankConsistency, setMeshMinRankConsistency, 0.40, 0.90, 0.05],
+                    ["MAX ENTROPY", meshMaxEntropyRatio, setMeshMaxEntropyRatio, 0.85, 0.99, 0.01],
+                    ["PASS THRESHOLD", meshFilterPassThreshold, setMeshFilterPassThreshold, 0.50, 1.0, 0.05],
+                    ["DEV THRESHOLD", meshDeviationThreshold, setMeshDeviationThreshold, 0.01, 0.10, 0.01],
+                  ].map(([label, val, setter, mn, mx, step]) => (
+                    <div key={label} style={{padding:"6px 8px", background:"var(--bg2)",
+                      border:"1px solid var(--border)", borderRadius:3}}>
+                      <div style={{fontSize:7, color:"var(--text-dim)", letterSpacing:2,
+                        marginBottom:3}}>{label}</div>
+                      <input type="number" min={mn} max={mx} step={step}
+                        style={{width:"100%", background:"transparent", border:"none",
+                          color:"var(--green)", fontFamily:"var(--mono)",
+                          fontSize:12, fontWeight:700, outline:"none"}}
+                        value={val}
+                        onChange={e => setter(parseFloat(e.target.value) || val)} />
+                    </div>
+                  ))}
                 </div>
               </div>
 
@@ -5482,9 +5833,16 @@ export default function DerivOracle() {
                   </select>
                 </div>
                 <div className="mesh-config-item">
-                  <div className="mesh-config-label">PAYOUT MULT</div>
+                  <div className="mesh-config-label">
+                    {meshMode === "DIFFERS" ? "DIFFERS PAYOUT" : "MATCHES PAYOUT"}
+                  </div>
                   <input className="mesh-config-input" type="number" min="0.1" max="9" step="0.05"
-                    value={meshPayout} onChange={e => setMeshPayout(parseFloat(e.target.value)||0.95)} />
+                    style={{color: meshMode === "DIFFERS" ? "var(--cyan)" : "var(--orange)"}}
+                    value={meshMode === "DIFFERS" ? meshDiffersPayout : meshMatchesPayout}
+                    onChange={e => {
+                      const v = parseFloat(e.target.value) || (meshMode === "DIFFERS" ? 0.95 : 8.0);
+                      meshMode === "DIFFERS" ? setMeshDiffersPayout(v) : setMeshMatchesPayout(v);
+                    }} />
                 </div>
                 <div className="mesh-config-item">
                   <div className="mesh-config-label">EDGE MARGIN</div>
