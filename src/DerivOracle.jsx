@@ -1679,6 +1679,133 @@ function runMatchesMode(ranked, rowSample, dominanceThreshold, minProb) {
   };
 }
 
+// ── EXECUTION LAYER: ADVANCED MATCHES MODE ──────────────────────────────────
+// High-precision MATCHES signal. ALL five conditions must pass simultaneously.
+// No clustering. No interval logic. Sharp probability peak targeting only.
+// Does NOT compute expectancy. Does NOT decide to trade.
+function runAdvancedMatchesMode(
+  ranked,          // sorted [{j,p}] descending from Layer C
+  rowSample,       // raw observation count for i* row
+  top1Buf,         // rolling buffer of last N top-1 digits (for confirmation)
+  filterPass,      // boolean — confidence filter must already be green
+  params           // { minP1, minGap, minSharpness, confirmTicks }
+) {
+  const {
+    minP1          = 0.18,
+    minGap         = 0.05,
+    minSharpness   = 0.15,
+    confirmTicks   = 3,
+  } = params || {};
+
+  const MIN_SAMPLE = 30;  // stricter than basic MATCHES
+
+  // ── Guard: insufficient data ──────────────────────────────────────────────
+  if (!ranked || ranked.length < 3) {
+    return {
+      mode: "ADV_MATCHES", trigger: false,
+      failReason: "INSUFFICIENT_RANKED_DATA",
+      predictedDigit: null, P1: null, P2: null, P3: null,
+      peakGap: null, sharpness: null, confirmCount: 0, strengthScore: 0
+    };
+  }
+
+  if (rowSample < MIN_SAMPLE) {
+    return {
+      mode: "ADV_MATCHES", trigger: false, failReason: "SAMPLE_FAIL",
+      predictedDigit: ranked[0].j,
+      P1: parseFloat(ranked[0].p.toFixed(4)),
+      P2: parseFloat(ranked[1].p.toFixed(4)),
+      P3: parseFloat(ranked[2].p.toFixed(4)),
+      peakGap: null, sharpness: null, confirmCount: 0, strengthScore: 0
+    };
+  }
+
+  const P1 = ranked[0].p;
+  const P2 = ranked[1].p;
+  const P3 = ranked[2].p;
+  const digit = ranked[0].j;
+
+  // ── Core metrics ──────────────────────────────────────────────────────────
+  const peakGap   = parseFloat((P1 - P2).toFixed(4));
+  // sharpness = P1 share of total probability mass (sum always ~1.0 with smoothing)
+  const totalMass = ranked.reduce((s, x) => s + x.p, 0);
+  const sharpness = parseFloat((P1 / totalMass).toFixed(4));
+
+  // ── Multi-tick confirmation count ─────────────────────────────────────────
+  // Count how many of the last confirmTicks entries in top1Buf match this digit
+  const window = top1Buf.slice(-confirmTicks);
+  const confirmCount = window.filter(d => d === digit).length;
+
+  // ── Strength score ────────────────────────────────────────────────────────
+  // Weighted blend: prob height (40%) + separation (30%) + confirmation (30%)
+  const scoreP1      = Math.min(1, P1 / 0.30);           // saturates at 30%
+  const scoreGap     = Math.min(1, peakGap / 0.10);      // saturates at 0.10 gap
+  const scoreConfirm = confirmTicks > 0
+    ? Math.min(1, confirmCount / confirmTicks) : 1;
+  const strengthScore = parseFloat(
+    (scoreP1 * 0.40 + scoreGap * 0.30 + scoreConfirm * 0.30).toFixed(4)
+  );
+
+  // ── Condition checks — ALL must pass ─────────────────────────────────────
+  const c1 = P1 >= minP1;
+  const c2 = peakGap >= minGap;
+  const c3 = sharpness >= minSharpness;
+  const c4 = filterPass === true;
+  const c5 = confirmCount >= confirmTicks;
+
+  if (!c1) {
+    return {
+      mode: "ADV_MATCHES", trigger: false, failReason: "P1_TOO_LOW",
+      predictedDigit: digit, P1, P2, P3, peakGap, sharpness,
+      confirmCount, strengthScore,
+      conditions: { c1, c2, c3, c4, c5 }
+    };
+  }
+  if (!c2) {
+    return {
+      mode: "ADV_MATCHES", trigger: false, failReason: "GAP_TOO_SMALL",
+      predictedDigit: digit, P1, P2, P3, peakGap, sharpness,
+      confirmCount, strengthScore,
+      conditions: { c1, c2, c3, c4, c5 }
+    };
+  }
+  if (!c3) {
+    return {
+      mode: "ADV_MATCHES", trigger: false, failReason: "SHARPNESS_FAIL",
+      predictedDigit: digit, P1, P2, P3, peakGap, sharpness,
+      confirmCount, strengthScore,
+      conditions: { c1, c2, c3, c4, c5 }
+    };
+  }
+  if (!c4) {
+    return {
+      mode: "ADV_MATCHES", trigger: false, failReason: "FILTER_NOT_PASSED",
+      predictedDigit: digit, P1, P2, P3, peakGap, sharpness,
+      confirmCount, strengthScore,
+      conditions: { c1, c2, c3, c4, c5 }
+    };
+  }
+  if (!c5) {
+    return {
+      mode: "ADV_MATCHES", trigger: false, failReason: "CONFIRMATION_PENDING",
+      predictedDigit: digit, P1, P2, P3, peakGap, sharpness,
+      confirmCount, strengthScore,
+      conditions: { c1, c2, c3, c4, c5 }
+    };
+  }
+
+  // ── All 5 conditions pass — TRIGGER ──────────────────────────────────────
+  return {
+    mode: "ADV_MATCHES", trigger: true, failReason: null,
+    predictedDigit: digit,
+    P1: parseFloat(P1.toFixed(4)),
+    P2: parseFloat(P2.toFixed(4)),
+    P3: parseFloat(P3.toFixed(4)),
+    peakGap, sharpness, confirmCount, strengthScore,
+    conditions: { c1, c2, c3, c4, c5 }
+  };
+}
+
 // ── EXECUTION LAYER: DIFFERS MODE ────────────────────────────────────────────
 // Pure function — no hooks, no side effects.
 // Builds an avoid cluster from top-K digits, selects safest outside target.
@@ -1979,6 +2106,14 @@ export default function DerivOracle() {
   const [meshMinRankConsistency,setMeshMinRankConsistency]= useState(0.60);
   const [meshMaxEntropyRatio,   setMeshMaxEntropyRatio]   = useState(0.97);
   const [meshFilterPassThreshold,setMeshFilterPassThreshold]= useState(0.75);
+  // ── ADVANCED MATCHES state ────────────────────────────────────────────────
+  const [advMatchMinP1,         setAdvMatchMinP1]         = useState(0.18);
+  const [advMatchMinGap,        setAdvMatchMinGap]         = useState(0.05);
+  const [advMatchMinSharpness,  setAdvMatchMinSharpness]   = useState(0.15);
+  const [advMatchConfirmTicks,  setAdvMatchConfirmTicks]   = useState(3);
+  const [advMatchResult,        setAdvMatchResult]         = useState(null);
+  // Rolling buffer: last N top-1 digits for multi-tick confirmation
+  const advMatchTop1BufRef = useRef([]);
   const [meshLog,        setMeshLog]        = useState("Waiting for live ticks (need N+k ticks)...");
   const [meshHoveredNode,setMeshHoveredNode]= useState(null);
 
@@ -3159,14 +3294,33 @@ export default function DerivOracle() {
       interval.payout    = activePayout;
     }
 
+    // ── Advanced MATCHES: update confirmation buffer then run ─────────────
+    const advTop1Buf = advMatchTop1BufRef.current;
+    if (execRanked.length > 0) advTop1Buf.push(execRanked[0].j);
+    if (advTop1Buf.length > Math.max(advMatchConfirmTicks, 10)) advTop1Buf.shift();
+
+    const advMatchesOut = runAdvancedMatchesMode(
+      execRanked, execRowSample,
+      [...advTop1Buf],
+      filterOut.pass,
+      {
+        minP1:         advMatchMinP1,
+        minGap:        advMatchMinGap,
+        minSharpness:  advMatchMinSharpness,
+        confirmTicks:  advMatchConfirmTicks,
+      }
+    );
+
     setMeshMatchesResult(matchesOut);
     setMeshDiffersResult(differsOut);
     setMeshFilterResult(filterOut);
+    setAdvMatchResult(advMatchesOut);
   }, [meshN, meshK, meshPayout, meshEpsilon,
       meshDominanceThreshold, meshMinProb, meshDiffersK, meshMinClusterMass,
       meshDiffersPayout, meshMatchesPayout,
       meshMinSamples, meshDeviationThreshold, meshMaxChangeRate,
-      meshMinRankConsistency, meshMaxEntropyRatio, meshFilterPassThreshold]);
+      meshMinRankConsistency, meshMaxEntropyRatio, meshFilterPassThreshold,
+      advMatchMinP1, advMatchMinGap, advMatchMinSharpness, advMatchConfirmTicks]);
 
   const resetMeshEngine = useCallback(() => {
     meshTRef.current = Array.from({length:10},()=>Array(10).fill(0));
@@ -3177,7 +3331,9 @@ export default function DerivOracle() {
     meshTop1HistoryRef.current  = [];
     setMeshState("IDLE"); setMeshDom(null); setMeshP(null);
     setMeshM(Array(10).fill(0)); setMeshInterval(null); setMeshSignal("IDLE");
-    setMeshMatchesResult(null); setMeshDiffersResult(null); setMeshFilterResult(null);
+    setMeshMatchesResult(null); setMeshDiffersResult(null);
+    setMeshFilterResult(null); setAdvMatchResult(null);
+    advMatchTop1BufRef.current = [];
     setMeshLog("Engine reset. Waiting for " + (meshN + meshK) + " ticks...");
   }, [meshN, meshK]);
 
@@ -3214,6 +3370,23 @@ export default function DerivOracle() {
   const filterChecks  = meshFilterResult ? meshFilterResult.checks : null;
   const filterMeta    = meshFilterResult ? meshFilterResult.meta : null;
   const filterScorePct = Math.round(filterScore * 100);
+
+  // ── ADVANCED MATCHES computed display vars ──────────────────────────────
+  const advTrigger       = advMatchResult ? advMatchResult.trigger : false;
+  const advDigit         = advMatchResult ? advMatchResult.predictedDigit : null;
+  const advP1            = advMatchResult ? advMatchResult.P1 : null;
+  const advP2            = advMatchResult ? advMatchResult.P2 : null;
+  const advP3            = advMatchResult ? advMatchResult.P3 : null;
+  const advPeakGap       = advMatchResult ? advMatchResult.peakGap : null;
+  const advSharpness     = advMatchResult ? advMatchResult.sharpness : null;
+  const advConfirmCount  = advMatchResult ? advMatchResult.confirmCount : 0;
+  const advStrengthScore = advMatchResult ? advMatchResult.strengthScore : 0;
+  const advFailReason    = advMatchResult ? (advMatchResult.failReason || "") : "";
+  const advConditions    = advMatchResult ? advMatchResult.conditions : null;
+  const advStrengthPct   = Math.round(advStrengthScore * 100);
+  // Expectancy at 8.0x using P1 as win probability
+  const advExpectancy    = advP1 !== null
+    ? parseFloat((advP1 * meshMatchesPayout - (1 - advP1)).toFixed(4)) : null;
 
   // Mode-aware payout label + MATCHES expectancy (uses 8.0 payout)
   const activePayout = meshMode === "MATCHES" ? meshMatchesPayout : meshDiffersPayout;
@@ -5665,6 +5838,171 @@ export default function DerivOracle() {
                       </div>
                     </div>
                   )}
+                </div>
+              </div>
+
+              {/* ---- ADVANCED MATCHES PANEL ---- */}
+              <div style={{marginBottom:12, padding:14, borderRadius:4,
+                border: advTrigger
+                  ? "2px solid var(--orange)"
+                  : "1px solid var(--border)",
+                background: advTrigger
+                  ? "rgba(255,107,53,0.06)"
+                  : "rgba(0,0,0,0.2)"}}>
+
+                {/* Header row */}
+                <div style={{display:"flex", alignItems:"center",
+                  justifyContent:"space-between", marginBottom:12, flexWrap:"wrap", gap:8}}>
+                  <div style={{display:"flex", alignItems:"center", gap:10}}>
+                    <span style={{fontSize:9, letterSpacing:3, color:"var(--orange)",
+                      fontFamily:"var(--head)"}}>ADVANCED MATCHES</span>
+                    <span style={{padding:"3px 10px", borderRadius:2, fontSize:10,
+                      fontWeight:700, letterSpacing:2,
+                      background: advTrigger
+                        ? "rgba(255,107,53,0.15)" : "rgba(255,51,102,0.10)",
+                      border:"1px solid " + (advTrigger ? "var(--orange)" : "var(--red)"),
+                      color: advTrigger ? "var(--orange)" : "var(--red)"}}>
+                      {advTrigger ? "TRIGGER" : (advFailReason || "WAITING")}
+                    </span>
+                  </div>
+                  {/* Strength score bar */}
+                  <div style={{display:"flex", alignItems:"center", gap:8}}>
+                    <span style={{fontSize:9, color:"var(--text-dim)"}}>STRENGTH</span>
+                    <div style={{width:90, height:8, background:"var(--border)",
+                      borderRadius:4, overflow:"hidden"}}>
+                      <div style={{height:"100%", borderRadius:4, transition:"width 0.35s",
+                        width: advStrengthPct + "%",
+                        background: advTrigger ? "var(--orange)"
+                          : advStrengthScore > 0.5 ? "var(--yellow)" : "var(--red)"}}/>
+                    </div>
+                    <span style={{fontSize:13, fontWeight:700, fontFamily:"var(--head)",
+                      color: advTrigger ? "var(--orange)"
+                        : advStrengthScore > 0.5 ? "var(--yellow)" : "var(--text-dim)"}}>
+                      {advStrengthPct}%
+                    </span>
+                  </div>
+                </div>
+
+                {/* Main signal display */}
+                <div style={{display:"grid", gridTemplateColumns:"auto 1fr", gap:16,
+                  alignItems:"start", marginBottom:12}}>
+
+                  {/* Big digit */}
+                  <div style={{textAlign:"center"}}>
+                    <div style={{fontSize:9, color:"var(--text-dim)", letterSpacing:2,
+                      marginBottom:4}}>PREDICTED DIGIT</div>
+                    <div style={{fontSize:72, fontWeight:900, lineHeight:1,
+                      fontFamily:"var(--head)",
+                      color: advTrigger ? "var(--orange)" : "var(--text-dim)"}}>
+                      {advDigit !== null ? advDigit : "--"}
+                    </div>
+                    <div style={{fontSize:9, color:"var(--text-dim)", marginTop:4}}>
+                      bet MATCHES on this digit
+                    </div>
+                  </div>
+
+                  {/* Metrics grid */}
+                  <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6}}>
+                    {[
+                      ["P1 (peak)", advP1 !== null ? (advP1*100).toFixed(1)+"%" : "--",
+                        advP1 !== null && advP1 >= advMatchMinP1],
+                      ["PEAK GAP", advPeakGap !== null ? advPeakGap.toFixed(4) : "--",
+                        advPeakGap !== null && advPeakGap >= advMatchMinGap],
+                      ["SHARPNESS", advSharpness !== null ? (advSharpness*100).toFixed(1)+"%" : "--",
+                        advSharpness !== null && advSharpness >= advMatchMinSharpness],
+                      ["CONFIRM", advConfirmCount + "/" + advMatchConfirmTicks,
+                        advConditions ? advConditions.c5 : false],
+                      ["FILTER", advConditions && advConditions.c4 ? "PASS" : "FAIL",
+                        advConditions ? advConditions.c4 : false],
+                      ["EXPECT", advExpectancy !== null
+                        ? (advExpectancy >= 0 ? "+" : "") + advExpectancy.toFixed(3) : "--",
+                        advExpectancy !== null && advExpectancy > 0],
+                    ].map(([label, val, ok]) => (
+                      <div key={label} style={{padding:"6px 8px", borderRadius:3,
+                        border:"1px solid " + (ok ? "rgba(255,107,53,0.35)" : "rgba(255,51,102,0.25)"),
+                        background: ok ? "rgba(255,107,53,0.06)" : "rgba(255,51,102,0.04)"}}>
+                        <div style={{fontSize:7, letterSpacing:2, color:"var(--text-dim)",
+                          marginBottom:3}}>{label}</div>
+                        <div style={{fontSize:12, fontWeight:700,
+                          color: ok ? "var(--orange)" : "var(--red)"}}>
+                          {val}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* P1 / P2 / P3 probability bar */}
+                {advP1 !== null && (
+                  <div style={{marginBottom:12}}>
+                    <div style={{fontSize:8, color:"var(--text-dim)", letterSpacing:2,
+                      marginBottom:5}}>PROBABILITY PROFILE (P1 / P2 / P3)</div>
+                    {[
+                      [advP1, advDigit, "var(--orange)"],
+                      [advP2, advMatchResult ? ranked => ranked : null, "var(--yellow)"],
+                      [advP3, null, "var(--text-dim)"],
+                    ].filter(([p]) => p !== null).map(([p, , color], idx) => (
+                      <div key={idx} style={{display:"flex", alignItems:"center",
+                        gap:8, marginBottom:4}}>
+                        <div style={{fontSize:9, color:"var(--text-dim)", width:20}}>
+                          P{idx+1}
+                        </div>
+                        <div style={{flex:1, height:6, background:"var(--border)",
+                          borderRadius:3, overflow:"hidden"}}>
+                          <div style={{height:"100%", borderRadius:3,
+                            width: Math.min(100, p * 500) + "%",
+                            background: color, transition:"width 0.4s"}}/>
+                        </div>
+                        <div style={{fontSize:10, fontWeight:700, color, width:42,
+                          textAlign:"right"}}>
+                          {(p*100).toFixed(1)}%
+                        </div>
+                      </div>
+                    ))}
+                    {advP1 !== null && advP2 !== null && (
+                      <div style={{fontSize:9, color:"var(--text-dim)", marginTop:4}}>
+                        Gap P1-P2: <span style={{
+                          color: advPeakGap >= advMatchMinGap ? "var(--green)" : "var(--red)",
+                          fontWeight:700}}>
+                          {advPeakGap !== null ? advPeakGap.toFixed(4) : "--"}
+                        </span>
+                        {"  |  "}
+                        Min required: <span style={{color:"var(--text-dim)"}}>
+                          {advMatchMinGap.toFixed(4)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Config params */}
+                <div style={{display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:6,
+                  padding:10, background:"var(--bg2)",
+                  border:"1px solid var(--border)", borderRadius:3}}>
+                  {[
+                    ["MIN P1", advMatchMinP1, setAdvMatchMinP1, 0.12, 0.40, 0.01],
+                    ["MIN GAP", advMatchMinGap, setAdvMatchMinGap, 0.02, 0.15, 0.01],
+                    ["MIN SHARP", advMatchMinSharpness, setAdvMatchMinSharpness, 0.10, 0.30, 0.01],
+                    ["CONFIRM X", advMatchConfirmTicks, setAdvMatchConfirmTicks, 1, 10, 1],
+                  ].map(([label, val, setter, mn, mx, step]) => (
+                    <div key={label}>
+                      <div style={{fontSize:7, color:"var(--text-dim)", letterSpacing:2,
+                        marginBottom:3}}>{label}</div>
+                      <input type="number" min={mn} max={mx} step={step}
+                        style={{width:"100%", background:"transparent", border:"none",
+                          color:"var(--orange)", fontFamily:"var(--mono)",
+                          fontSize:12, fontWeight:700, outline:"none"}}
+                        value={val}
+                        onChange={e => setter(parseFloat(e.target.value) || val)} />
+                    </div>
+                  ))}
+                </div>
+
+                {/* Risk note */}
+                <div style={{marginTop:8, fontSize:9, color:"var(--text-dim)",
+                  lineHeight:1.7, borderTop:"1px solid var(--border)", paddingTop:6}}>
+                  Payout 8.0x -- break-even 11.1% -- all 5 conditions must pass simultaneously.
+                  CONFIRMATION_PENDING is not a failure -- it means the engine is watching.
                 </div>
               </div>
 
