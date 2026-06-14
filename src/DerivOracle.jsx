@@ -1988,6 +1988,128 @@ function runConfidenceFilter(
   };
 }
 
+// ── VALIDATION LAYER ────────────────────────────────────────────────────────
+// Final decision gate. Sits after execution layer + confidence filter.
+// Computes CONSERVATIVE adjusted expectancy. Issues EXECUTE or HOLD.
+// Pure function — no hooks, no side effects.
+function runValidationLayer(
+  mode,            // "MATCHES" | "DIFFERS"
+  execResult,      // output from runMatchesMode or runDiffersMode
+  filterResult,    // output from runConfidenceFilter
+  payout,          // mode-specific payout multiplier
+  params           // { edgeThreshold, uncertaintyPenalty, instabilityPenalty, minSampleForFull }
+) {
+  const {
+    edgeThreshold      = 0.02,
+    uncertaintyPenalty = 0.10,
+    instabilityPenalty = 0.05,
+    minSampleForFull   = 50,
+  } = params || {};
+
+  // ── Guard: missing inputs ─────────────────────────────────────────────────
+  if (!execResult || !filterResult) {
+    return {
+      mode, finalDecision: "HOLD", riskFlag: "NO_INPUT",
+      rawPwin: null, adjustedPwin: null,
+      rawExpectancy: null, adjustedExpectancy: null,
+      penaltyApplied: 0, allPass: false,
+    };
+  }
+
+  // ── Step 1: Extract raw P_win per mode ───────────────────────────────────
+  let rawPwin = null;
+  if (mode === "MATCHES") {
+    // MATCHES: P_win = P1 (probability top digit appears)
+    rawPwin = execResult.P1 || null;
+  } else {
+    // DIFFERS: P_win = 1 - targetP (probability target digit does NOT appear)
+    rawPwin = execResult.targetP !== null && execResult.targetP !== undefined
+      ? parseFloat((1 - execResult.targetP).toFixed(4)) : null;
+  }
+
+  if (rawPwin === null) {
+    return {
+      mode, finalDecision: "HOLD", riskFlag: "NO_PWIN",
+      rawPwin: null, adjustedPwin: null,
+      rawExpectancy: null, adjustedExpectancy: null,
+      penaltyApplied: 0, allPass: false,
+    };
+  }
+
+  // ── Step 2: Apply downward adjustments to P_win ───────────────────────────
+  let totalPenalty  = 0;
+  const riskFlags   = [];
+
+  // Penalty A — sample size uncertainty
+  // Full penalty when rowSample < minSampleForFull, tapers off above it
+  const rowSample = filterResult.meta ? filterResult.meta.rowSample : 0;
+  if (rowSample < minSampleForFull) {
+    const sampleRatio  = rowSample / minSampleForFull;          // 0 → 1
+    const samplePenalty = uncertaintyPenalty * (1 - sampleRatio); // full → zero
+    totalPenalty += samplePenalty;
+    riskFlags.push("LOW_SAMPLE");
+  }
+
+  // Penalty B — instability (dominance or rank instability detected)
+  const filterChecks = filterResult.checks || {};
+  const isUnstable   = (filterChecks.domStability  && !filterChecks.domStability.pass)
+                    || (filterChecks.rankStability  && !filterChecks.rankStability.pass);
+  if (isUnstable) {
+    totalPenalty += instabilityPenalty;
+    riskFlags.push("INSTABILITY");
+  }
+
+  // Penalty C — high entropy (distribution close to flat)
+  const entropyFailed = filterChecks.entropy && !filterChecks.entropy.pass;
+  if (entropyFailed) {
+    totalPenalty += instabilityPenalty * 0.5; // half-weight
+    riskFlags.push("HIGH_ENTROPY");
+  }
+
+  // Penalty is bounded: never push P_win below break-even
+  const breakEven     = parseFloat((1 / (payout + 1)).toFixed(4));
+  const adjustedPwin  = parseFloat(Math.max(breakEven, rawPwin - totalPenalty).toFixed(4));
+  const penaltyApplied = parseFloat(totalPenalty.toFixed(4));
+
+  // ── Step 3: Compute expectancies ─────────────────────────────────────────
+  const rawExpectancy      = parseFloat((rawPwin * payout - (1 - rawPwin)).toFixed(4));
+  const adjustedExpectancy = parseFloat((adjustedPwin * payout - (1 - adjustedPwin)).toFixed(4));
+
+  // ── Step 4: Final gate ───────────────────────────────────────────────────
+  // Both confidence filter AND adjusted expectancy must clear their thresholds
+  const confidencePass = filterResult.pass === true;
+  const execPass       = execResult.pass   === true;
+  const expectancyPass = adjustedExpectancy > edgeThreshold;
+  const allPass        = confidencePass && execPass && expectancyPass;
+
+  if (!confidencePass) riskFlags.push("FILTER_REJECTED");
+  if (!execPass)       riskFlags.push("EXEC_LAYER_FAIL");
+  if (!expectancyPass) riskFlags.push("EDGE_INSUFFICIENT");
+
+  const finalDecision = allPass ? "EXECUTE" : "HOLD";
+
+  // Severity: how far adjusted expectancy is from zero
+  const edgeStrength = adjustedExpectancy > 0.10 ? "STRONG"
+    : adjustedExpectancy > 0.02 ? "MARGINAL" : "WEAK";
+
+  return {
+    mode,
+    finalDecision,
+    riskFlag: riskFlags.length > 0 ? riskFlags.join(" | ") : "NONE",
+    riskFlags,
+    rawPwin:             parseFloat(rawPwin.toFixed(4)),
+    adjustedPwin,
+    rawExpectancy,
+    adjustedExpectancy,
+    penaltyApplied,
+    breakEven,
+    edgeThreshold,
+    edgeStrength,
+    allPass,
+    gates: { confidencePass, execPass, expectancyPass },
+  };
+}
+
 // ── MAIN COMPONENT ────────────────────────────────────────────────────────────
 export default function DerivOracle() {
   const [ticks, setTicks] = useState([]);
@@ -2114,6 +2236,13 @@ export default function DerivOracle() {
   const [advMatchResult,        setAdvMatchResult]         = useState(null);
   // Rolling buffer: last N top-1 digits for multi-tick confirmation
   const advMatchTop1BufRef = useRef([]);
+  // ── VALIDATION LAYER state ────────────────────────────────────────────────
+  const [valMatchesResult,      setValMatchesResult]      = useState(null);
+  const [valDiffersResult,      setValDiffersResult]      = useState(null);
+  const [meshValEdgeThreshold,  setMeshValEdgeThreshold]  = useState(0.02);
+  const [meshValUncertaintyPenalty,setMeshValUncertaintyPenalty]=useState(0.10);
+  const [meshValInstabilityPenalty,setMeshValInstabilityPenalty]=useState(0.05);
+  const [meshValMinSampleForFull,setMeshValMinSampleForFull]=useState(50);
   const [meshLog,        setMeshLog]        = useState("Waiting for live ticks (need N+k ticks)...");
   const [meshHoveredNode,setMeshHoveredNode]= useState(null);
 
@@ -3311,16 +3440,34 @@ export default function DerivOracle() {
       }
     );
 
+    // ── Validation Layer — run for both modes independently ──────────────
+    const valParams = {
+      edgeThreshold:      meshValEdgeThreshold,
+      uncertaintyPenalty: meshValUncertaintyPenalty,
+      instabilityPenalty: meshValInstabilityPenalty,
+      minSampleForFull:   meshValMinSampleForFull,
+    };
+    const valMatchesOut = runValidationLayer(
+      "MATCHES", matchesOut, filterOut, meshMatchesPayout, valParams
+    );
+    const valDiffersOut = runValidationLayer(
+      "DIFFERS", differsOut, filterOut, meshDiffersPayout, valParams
+    );
+
     setMeshMatchesResult(matchesOut);
     setMeshDiffersResult(differsOut);
     setMeshFilterResult(filterOut);
     setAdvMatchResult(advMatchesOut);
+    setValMatchesResult(valMatchesOut);
+    setValDiffersResult(valDiffersOut);
   }, [meshN, meshK, meshPayout, meshEpsilon,
       meshDominanceThreshold, meshMinProb, meshDiffersK, meshMinClusterMass,
       meshDiffersPayout, meshMatchesPayout,
       meshMinSamples, meshDeviationThreshold, meshMaxChangeRate,
       meshMinRankConsistency, meshMaxEntropyRatio, meshFilterPassThreshold,
-      advMatchMinP1, advMatchMinGap, advMatchMinSharpness, advMatchConfirmTicks]);
+      advMatchMinP1, advMatchMinGap, advMatchMinSharpness, advMatchConfirmTicks,
+      meshValEdgeThreshold, meshValUncertaintyPenalty,
+      meshValInstabilityPenalty, meshValMinSampleForFull]);
 
   const resetMeshEngine = useCallback(() => {
     meshTRef.current = Array.from({length:10},()=>Array(10).fill(0));
@@ -3333,6 +3480,7 @@ export default function DerivOracle() {
     setMeshM(Array(10).fill(0)); setMeshInterval(null); setMeshSignal("IDLE");
     setMeshMatchesResult(null); setMeshDiffersResult(null);
     setMeshFilterResult(null); setAdvMatchResult(null);
+    setValMatchesResult(null); setValDiffersResult(null);
     advMatchTop1BufRef.current = [];
     setMeshLog("Engine reset. Waiting for " + (meshN + meshK) + " ticks...");
   }, [meshN, meshK]);
@@ -3392,8 +3540,30 @@ export default function DerivOracle() {
   const activePayout = meshMode === "MATCHES" ? meshMatchesPayout : meshDiffersPayout;
   const matchesExpectancy = (matchesP1 !== null)
     ? parseFloat((matchesP1 * meshMatchesPayout - (1 - matchesP1)).toFixed(4)) : null;
-  const differsExpectancy = (differsTargetP !== null)
-    ? parseFloat(((1 - differsClusterMass) * meshDiffersPayout - differsClusterMass).toFixed(4)) : null;
+  // DIFFERS P_win = 1 - targetP (probability target digit does NOT appear)
+  const differsPwin       = differsTargetP !== null ? parseFloat((1 - differsTargetP).toFixed(4)) : null;
+  const differsExpectancy = differsPwin !== null
+    ? parseFloat((differsPwin * meshDiffersPayout - (1 - differsPwin)).toFixed(4)) : null;
+
+  // ── VALIDATION LAYER computed display vars ──────────────────────────────
+  // Active mode validation result
+  const activeValResult   = meshMode === "MATCHES" ? valMatchesResult : valDiffersResult;
+  const valDecision       = activeValResult ? activeValResult.finalDecision : "HOLD";
+  const valAdjExp         = activeValResult ? activeValResult.adjustedExpectancy : null;
+  const valRawExp         = activeValResult ? activeValResult.rawExpectancy : null;
+  const valRawPwin        = activeValResult ? activeValResult.rawPwin : null;
+  const valAdjPwin        = activeValResult ? activeValResult.adjustedPwin : null;
+  const valPenalty        = activeValResult ? activeValResult.penaltyApplied : 0;
+  const valRiskFlag       = activeValResult ? activeValResult.riskFlag : "--";
+  const valRiskFlags      = activeValResult ? (activeValResult.riskFlags || []) : [];
+  const valGates          = activeValResult ? activeValResult.gates : null;
+  const valEdgeStrength   = activeValResult ? activeValResult.edgeStrength : "--";
+  const valAllPass        = activeValResult ? activeValResult.allPass : false;
+  const valBreakEven      = activeValResult ? activeValResult.breakEven : null;
+  const isExecute         = valDecision === "EXECUTE";
+  // Both modes always computed — for side-by-side display
+  const valM = valMatchesResult;
+  const valD = valDiffersResult;
 
   // ── EV CALIBRATOR computed rows (Task 3) — must stay above return() ──────────
   const evCalibBeDiffers  = calculateBreakEvenWinRate(0.95);
@@ -5758,84 +5928,159 @@ export default function DerivOracle() {
                   )}
                 </div>
 
-                {/* DIFFERS OUTPUT */}
+                {/* DIFFERS OUTPUT -- always renders live data regardless of pass/fail */}
                 <div style={{padding:14, borderRadius:4,
                   border: meshMode === "DIFFERS"
                     ? "2px solid var(--cyan)" : "1px solid var(--border)",
                   background: meshMode === "DIFFERS"
                     ? "rgba(0,191,255,0.05)" : "rgba(0,0,0,0.2)",
                   opacity: meshMode === "DIFFERS" ? 1 : 0.55}}>
+
+                  {/* Header */}
                   <div style={{fontSize:9, letterSpacing:3, color:"var(--cyan)",
                     fontFamily:"var(--head)", marginBottom:10,
                     display:"flex", justifyContent:"space-between", alignItems:"center"}}>
                     <span>DIFFERS LAYER</span>
-                    <span style={{padding:"2px 8px", borderRadius:2, fontSize:9,
-                      background: differsPass ? "rgba(0,255,136,0.12)" : "rgba(255,51,102,0.12)",
-                      border: "1px solid " + (differsPass ? "var(--green)" : "var(--red)"),
-                      color: differsPass ? "var(--green)" : "var(--red)"}}>
-                      {differsPass ? "PASS" : "FAIL"}
-                    </span>
+                    <div style={{display:"flex", gap:6, alignItems:"center"}}>
+                      <span style={{fontSize:8, color:"var(--text-dim)"}}>
+                        {differsFailReason || (differsPass ? "" : "WAITING")}
+                      </span>
+                      <span style={{padding:"2px 8px", borderRadius:2, fontSize:9,
+                        background: differsPass ? "rgba(0,255,136,0.12)" : "rgba(255,107,53,0.12)",
+                        border:"1px solid " + (differsPass ? "var(--green)" : "var(--orange)"),
+                        color: differsPass ? "var(--green)" : "var(--orange)"}}>
+                        {differsPass ? "SIGNAL" : "BUILDING"}
+                      </span>
+                    </div>
                   </div>
-                  <div style={{marginBottom:8}}>
+
+                  {/* Target digit -- always show, dim if no data */}
+                  <div style={{marginBottom:10}}>
                     <div style={{fontSize:9, color:"var(--text-dim)", letterSpacing:1,
                       marginBottom:3}}>TARGET DIGIT (bet DIFFERS on)</div>
-                    <div style={{fontSize:44, fontWeight:700, color:"var(--cyan)",
-                      fontFamily:"var(--head)", lineHeight:1}}>
-                      {differsTarget !== null ? differsTarget : "--"}
-                    </div>
-                    <div style={{fontSize:9, color:"var(--text-dim)", marginTop:2}}>
-                      P = {differsTargetP !== null ? (differsTargetP*100).toFixed(1)+"%" : "--"} (lowest outside cluster)
+                    <div style={{display:"flex", alignItems:"baseline", gap:12}}>
+                      <div style={{fontSize:52, fontWeight:700, lineHeight:1,
+                        fontFamily:"var(--head)",
+                        color: differsTarget !== null ? "var(--cyan)" : "var(--text-dim)"}}>
+                        {differsTarget !== null ? differsTarget : "--"}
+                      </div>
+                      {differsTargetP !== null && (
+                        <div>
+                          <div style={{fontSize:9, color:"var(--text-dim)"}}>PROB OF APPEARING</div>
+                          <div style={{fontSize:16, fontWeight:700, color:"var(--cyan)"}}>
+                            {(differsTargetP*100).toFixed(1)}%
+                          </div>
+                          <div style={{fontSize:9, color:"var(--green)"}}>
+                            P_win = {differsPwin !== null ? (differsPwin*100).toFixed(1)+"%" : "--"}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
-                  <div style={{marginBottom:8}}>
+
+                  {/* Avoid cluster -- show even while building */}
+                  <div style={{marginBottom:10}}>
                     <div style={{fontSize:9, color:"var(--text-dim)", letterSpacing:1,
-                      marginBottom:4}}>AVOID CLUSTER (top-{meshDiffersK})</div>
+                      marginBottom:5}}>AVOID CLUSTER — top-{meshDiffersK} most probable</div>
                     <div style={{display:"flex", gap:5, flexWrap:"wrap"}}>
                       {differsCluster.length > 0 ? differsCluster.map(d => (
-                        <span key={d} style={{width:28, height:28, display:"flex",
+                        <span key={d} style={{width:32, height:32, display:"flex",
                           alignItems:"center", justifyContent:"center",
-                          borderRadius:3, fontSize:12, fontWeight:700,
+                          borderRadius:3, fontSize:14, fontWeight:700,
                           background:"rgba(255,51,102,0.12)",
                           border:"1px solid rgba(255,51,102,0.4)",
                           color:"var(--red)"}}>
                           {d}
                         </span>
-                      )) : <span style={{color:"var(--text-dim)", fontSize:10}}>--</span>}
+                      )) : (
+                        <span style={{fontSize:10, color:"var(--text-dim)", fontStyle:"italic"}}>
+                          {meshDiffersResult ? "Collecting: " + (meshBufRef ? meshBufRef.current.length : 0) + " ticks..." : "Waiting for ticks..."}
+                        </span>
+                      )}
                     </div>
                   </div>
-                  <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:6,
-                    fontSize:9, color:"var(--text-dim)"}}>
-                    <div>
-                      <div style={{letterSpacing:1, marginBottom:2}}>CLUSTER MASS</div>
+
+                  {/* Stats grid */}
+                  <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6,
+                    marginBottom:8}}>
+                    <div style={{padding:"6px 8px", background:"var(--bg2)",
+                      border:"1px solid var(--border)", borderRadius:3}}>
+                      <div style={{fontSize:8, color:"var(--text-dim)", letterSpacing:1,
+                        marginBottom:2}}>CLUSTER MASS</div>
                       <div style={{fontSize:13, fontWeight:700,
-                        color: differsClusterMass >= 0.35 ? "var(--green)" : "var(--red)"}}>
-                        {(differsClusterMass*100).toFixed(1) + "%"}
+                        color: differsClusterMass >= meshMinClusterMass
+                          ? "var(--green)" : "var(--text-dim)"}}>
+                        {(differsClusterMass*100).toFixed(1)}%
+                      </div>
+                      <div style={{fontSize:8, color:"var(--text-dim)"}}>
+                        need {(meshMinClusterMass*100).toFixed(0)}%
                       </div>
                     </div>
-                    <div>
-                      <div style={{letterSpacing:1, marginBottom:2}}>STATUS</div>
-                      <div style={{fontSize:10, fontWeight:700,
-                        color: differsPass ? "var(--green)" : "var(--red)"}}>
-                        {differsPass ? "SIGNAL" : differsFailReason || "--"}
+                    <div style={{padding:"6px 8px", background:"var(--bg2)",
+                      border:"1px solid var(--border)", borderRadius:3}}>
+                      <div style={{fontSize:8, color:"var(--text-dim)", letterSpacing:1,
+                        marginBottom:2}}>RAW E</div>
+                      <div style={{fontSize:13, fontWeight:700,
+                        color: differsExpectancy !== null && differsExpectancy > 0
+                          ? "var(--cyan)" : "var(--text-dim)"}}>
+                        {differsExpectancy !== null
+                          ? (differsExpectancy >= 0 ? "+" : "") + differsExpectancy.toFixed(3)
+                          : "--"}
                       </div>
+                      <div style={{fontSize:8, color:"var(--text-dim)"}}>0.95x payout</div>
+                    </div>
+                    <div style={{padding:"6px 8px", background:"var(--bg2)",
+                      border:"1px solid var(--border)", borderRadius:3}}>
+                      <div style={{fontSize:8, color:"var(--text-dim)", letterSpacing:1,
+                        marginBottom:2}}>K / PAYOUT</div>
+                      <div style={{fontSize:13, fontWeight:700, color:"var(--text)"}}>
+                        {meshDiffersK} / {meshDiffersPayout}x
+                      </div>
+                      <div style={{fontSize:8, color:"var(--text-dim)"}}>break-even 47.4%</div>
                     </div>
                   </div>
-                  <div style={{marginTop:8, fontSize:9, color:"var(--text-dim)",
-                    lineHeight:1.6, borderTop:"1px solid var(--border)", paddingTop:6}}>
-                    K = {meshDiffersK} | min cluster mass &gt;= {(meshMinClusterMass*100).toFixed(0)}%
-                  </div>
-                  {/* DIFFERS expectancy using 0.95x payout */}
-                  {differsPass && differsExpectancy !== null && (
-                    <div style={{marginTop:8, padding:"6px 8px", borderRadius:3,
-                      background: differsExpectancy > 0 ? "rgba(0,191,255,0.08)" : "rgba(255,51,102,0.08)",
-                      border:"1px solid " + (differsExpectancy > 0 ? "var(--cyan)" : "var(--red)")}}>
-                      <div style={{fontSize:9, color:"var(--text-dim)", marginBottom:2}}>
-                        EXPECTANCY (E = (1-clusterMass) x 0.95 - clusterMass)
-                      </div>
-                      <div style={{fontSize:14, fontWeight:700,
-                        color: differsExpectancy > 0 ? "var(--cyan)" : "var(--red)"}}>
-                        {differsExpectancy >= 0 ? "+" : ""}{differsExpectancy.toFixed(4)}
-                      </div>
+
+                  {/* Probability bars for all 10 digits */}
+                  {meshDiffersResult && meshP && meshDom !== null && (
+                    <div style={{marginTop:6}}>
+                      <div style={{fontSize:8, color:"var(--text-dim)", letterSpacing:2,
+                        marginBottom:5}}>DIGIT PROBABILITIES FROM i*={meshDom}</div>
+                      {Array.from({length:10}, (_,d) => {
+                        const p   = meshP[meshDom] ? meshP[meshDom][d] : 0.10;
+                        const inCluster = differsCluster.includes(d);
+                        const isTarget  = d === differsTarget;
+                        return (
+                          <div key={d} style={{display:"flex", alignItems:"center",
+                            gap:6, marginBottom:3}}>
+                            <div style={{width:12, fontSize:9, fontWeight:700,
+                              color: isTarget ? "var(--cyan)"
+                                : inCluster ? "var(--red)" : "var(--text-dim)"}}>
+                              {d}
+                            </div>
+                            <div style={{flex:1, height:5, background:"var(--border)",
+                              borderRadius:2, overflow:"hidden"}}>
+                              <div style={{height:"100%", borderRadius:2,
+                                width: Math.min(100, p*600) + "%",
+                                background: isTarget ? "var(--cyan)"
+                                  : inCluster ? "var(--red)" : "rgba(200,208,224,0.2)",
+                                transition:"width 0.4s"}}/>
+                            </div>
+                            <div style={{width:36, fontSize:8, textAlign:"right",
+                              color: isTarget ? "var(--cyan)"
+                                : inCluster ? "var(--red)" : "var(--text-dim)"}}>
+                              {(p*100).toFixed(1)}%
+                            </div>
+                            {isTarget && (
+                              <div style={{fontSize:7, color:"var(--cyan)",
+                                letterSpacing:1}}>TARGET</div>
+                            )}
+                            {inCluster && !isTarget && (
+                              <div style={{fontSize:7, color:"var(--red)",
+                                letterSpacing:1}}>AVOID</div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -6100,6 +6345,206 @@ export default function DerivOracle() {
                         style={{width:"100%", background:"transparent", border:"none",
                           color:"var(--green)", fontFamily:"var(--mono)",
                           fontSize:12, fontWeight:700, outline:"none"}}
+                        value={val}
+                        onChange={e => setter(parseFloat(e.target.value) || val)} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* ---- VALIDATION LAYER PANEL ---- */}
+              <div style={{marginBottom:12, padding:14, borderRadius:4,
+                border: "2px solid " + (isExecute ? "var(--green)" : "rgba(255,51,102,0.4)"),
+                background: isExecute
+                  ? "rgba(0,255,136,0.04)" : "rgba(255,51,102,0.03)"}}>
+
+                {/* Header with EXECUTE / HOLD decision */}
+                <div style={{display:"flex", alignItems:"center",
+                  justifyContent:"space-between", marginBottom:12, flexWrap:"wrap", gap:8}}>
+                  <div style={{display:"flex", alignItems:"center", gap:10}}>
+                    <span style={{fontSize:9, letterSpacing:3, color:"var(--text-dim)",
+                      fontFamily:"var(--head)"}}>VALIDATION LAYER</span>
+                    <span style={{padding:"6px 18px", borderRadius:3, fontSize:12,
+                      fontWeight:900, letterSpacing:4, fontFamily:"var(--head)",
+                      background: isExecute ? "rgba(0,255,136,0.15)" : "rgba(255,51,102,0.12)",
+                      border:"2px solid " + (isExecute ? "var(--green)" : "var(--red)"),
+                      color: isExecute ? "var(--green)" : "var(--red)"}}>
+                      {valDecision}
+                    </span>
+                    <span style={{fontSize:9, letterSpacing:1,
+                      color: valEdgeStrength === "STRONG" ? "var(--green)"
+                        : valEdgeStrength === "MARGINAL" ? "var(--yellow)" : "var(--text-dim)"}}>
+                      {valEdgeStrength}
+                    </span>
+                  </div>
+                  <div style={{fontSize:9, color:"var(--text-dim)"}}>
+                    MODE: <span style={{color: meshMode === "MATCHES"
+                      ? "var(--orange)" : "var(--cyan)", fontWeight:700}}>
+                      {meshMode}
+                    </span>
+                    {" | "}payout: {activePayout}x
+                    {" | "}break-even: {valBreakEven !== null
+                      ? (valBreakEven*100).toFixed(1)+"%" : "--"}
+                  </div>
+                </div>
+
+                {/* Side by side: MATCHES val vs DIFFERS val */}
+                <div style={{display:"grid", gridTemplateColumns:"1fr 1fr",
+                  gap:10, marginBottom:12}}>
+                  {[
+                    ["MATCHES", valM, "var(--orange)", meshMatchesPayout],
+                    ["DIFFERS", valD, "var(--cyan)",   meshDiffersPayout],
+                  ].map(([label, vr, color, pay]) => (
+                    <div key={label} style={{padding:10, borderRadius:3,
+                      border:"1px solid " + (vr && vr.allPass
+                        ? "var(--green)" : "rgba(255,255,255,0.06)"),
+                      background: vr && vr.allPass
+                        ? "rgba(0,255,136,0.04)" : "rgba(0,0,0,0.2)"}}>
+                      <div style={{fontSize:8, letterSpacing:2, color,
+                        marginBottom:8, fontFamily:"var(--head)",
+                        display:"flex", justifyContent:"space-between"}}>
+                        <span>{label}</span>
+                        <span style={{color: vr && vr.allPass ? "var(--green)" : "var(--red)",
+                          fontWeight:700}}>
+                          {vr ? vr.finalDecision : "HOLD"}
+                        </span>
+                      </div>
+                      <div style={{display:"grid", gridTemplateColumns:"1fr 1fr",
+                        gap:4, fontSize:9}}>
+                        <div>
+                          <div style={{color:"var(--text-dim)", fontSize:7,
+                            marginBottom:1}}>RAW P_WIN</div>
+                          <div style={{color:"var(--text)", fontWeight:700}}>
+                            {vr && vr.rawPwin !== null
+                              ? (vr.rawPwin*100).toFixed(1)+"%" : "--"}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{color:"var(--text-dim)", fontSize:7,
+                            marginBottom:1}}>ADJ P_WIN</div>
+                          <div style={{color: vr && vr.adjustedPwin > (1/(pay+1))
+                            ? "var(--green)" : "var(--red)", fontWeight:700}}>
+                            {vr && vr.adjustedPwin !== null
+                              ? (vr.adjustedPwin*100).toFixed(1)+"%" : "--"}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{color:"var(--text-dim)", fontSize:7,
+                            marginBottom:1}}>RAW E</div>
+                          <div style={{color:"var(--text-dim)"}}>
+                            {vr && vr.rawExpectancy !== null
+                              ? (vr.rawExpectancy >= 0 ? "+" : "")
+                                + vr.rawExpectancy.toFixed(4) : "--"}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{color:"var(--text-dim)", fontSize:7,
+                            marginBottom:1}}>ADJ E</div>
+                          <div style={{color: vr && vr.adjustedExpectancy > 0
+                            ? "var(--green)" : "var(--red)", fontWeight:700}}>
+                            {vr && vr.adjustedExpectancy !== null
+                              ? (vr.adjustedExpectancy >= 0 ? "+" : "")
+                                + vr.adjustedExpectancy.toFixed(4) : "--"}
+                          </div>
+                        </div>
+                      </div>
+                      {/* Penalty display */}
+                      {vr && vr.penaltyApplied > 0 && (
+                        <div style={{marginTop:6, fontSize:8,
+                          color:"var(--yellow)", lineHeight:1.6}}>
+                          penalty: -{(vr.penaltyApplied*100).toFixed(1)}pp
+                          {" | "}{vr.riskFlag}
+                        </div>
+                      )}
+                      {/* Gate checks */}
+                      {vr && vr.gates && (
+                        <div style={{display:"flex", gap:4, marginTop:6, flexWrap:"wrap"}}>
+                          {[
+                            ["FILTER", vr.gates.confidencePass],
+                            ["EXEC",   vr.gates.execPass],
+                            ["EDGE",   vr.gates.expectancyPass],
+                          ].map(([g, ok]) => (
+                            <span key={g} style={{fontSize:7, padding:"1px 6px",
+                              borderRadius:2, letterSpacing:1,
+                              background: ok ? "rgba(0,255,136,0.10)" : "rgba(255,51,102,0.10)",
+                              border:"1px solid " + (ok ? "var(--green)" : "var(--red)"),
+                              color: ok ? "var(--green)" : "var(--red)"}}>
+                              {g}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Adjusted expectancy progress bar vs threshold */}
+                <div style={{marginBottom:10}}>
+                  <div style={{display:"flex", justifyContent:"space-between",
+                    fontSize:8, color:"var(--text-dim)", marginBottom:4}}>
+                    <span>ADJUSTED EXPECTANCY ({meshMode} mode)</span>
+                    <span>threshold: +{(meshValEdgeThreshold).toFixed(3)}</span>
+                  </div>
+                  <div style={{position:"relative", height:10,
+                    background:"var(--border)", borderRadius:5, overflow:"hidden"}}>
+                    {/* Zero line */}
+                    <div style={{position:"absolute", left:"50%", top:0,
+                      width:1, height:"100%", background:"rgba(255,255,255,0.15)"}}/>
+                    {/* Bar from center */}
+                    <div style={{position:"absolute",
+                      left: valAdjExp !== null && valAdjExp >= 0 ? "50%" : undefined,
+                      right: valAdjExp !== null && valAdjExp < 0 ? "50%" : undefined,
+                      width: valAdjExp !== null
+                        ? Math.min(50, Math.abs(valAdjExp) * 200) + "%" : "0%",
+                      height:"100%",
+                      background: isExecute ? "var(--green)" : "var(--red)",
+                      transition:"width 0.4s",
+                      borderRadius:5}}/>
+                  </div>
+                  <div style={{display:"flex", justifyContent:"space-between",
+                    fontSize:8, color:"var(--text-dim)", marginTop:3}}>
+                    <span>-0.25</span>
+                    <span style={{color: isExecute ? "var(--green)" : "var(--red)",
+                      fontWeight:700}}>
+                      E = {valAdjExp !== null
+                        ? (valAdjExp >= 0 ? "+" : "") + valAdjExp.toFixed(4) : "--"}
+                    </span>
+                    <span>+0.25</span>
+                  </div>
+                </div>
+
+                {/* Risk flags */}
+                {valRiskFlags.length > 0 && (
+                  <div style={{display:"flex", gap:6, flexWrap:"wrap", marginBottom:8}}>
+                    {valRiskFlags.map(f => (
+                      <span key={f} style={{fontSize:8, padding:"2px 8px",
+                        borderRadius:2, letterSpacing:1,
+                        background:"rgba(255,215,0,0.08)",
+                        border:"1px solid rgba(255,215,0,0.3)",
+                        color:"var(--yellow)"}}>
+                        {f}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {/* Validation params */}
+                <div style={{display:"grid", gridTemplateColumns:"repeat(4,1fr)",
+                  gap:6, padding:8, background:"var(--bg2)",
+                  border:"1px solid var(--border)", borderRadius:3}}>
+                  {[
+                    ["EDGE THRESH", meshValEdgeThreshold, setMeshValEdgeThreshold, 0.005, 0.10, 0.005],
+                    ["UNCERT PENALTY", meshValUncertaintyPenalty, setMeshValUncertaintyPenalty, 0.01, 0.20, 0.01],
+                    ["INSTAB PENALTY", meshValInstabilityPenalty, setMeshValInstabilityPenalty, 0.01, 0.15, 0.01],
+                    ["FULL SAMPLE N", meshValMinSampleForFull, setMeshValMinSampleForFull, 20, 200, 5],
+                  ].map(([label, val, setter, mn, mx, step]) => (
+                    <div key={label}>
+                      <div style={{fontSize:7, color:"var(--text-dim)", letterSpacing:2,
+                        marginBottom:3}}>{label}</div>
+                      <input type="number" min={mn} max={mx} step={step}
+                        style={{width:"100%", background:"transparent", border:"none",
+                          color:"var(--green)", fontFamily:"var(--mono)",
+                          fontSize:11, fontWeight:700, outline:"none"}}
                         value={val}
                         onChange={e => setter(parseFloat(e.target.value) || val)} />
                     </div>
