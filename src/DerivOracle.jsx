@@ -1620,7 +1620,7 @@ const CustomTooltip = ({ active, payload, label }) => {
 // Reads ranked probability vector from Layer C. Outputs signal data only.
 // Does NOT compute expectancy. Does NOT decide to trade.
 function runMatchesMode(ranked, rowSample, dominanceThreshold, minProb) {
-  const MIN_SAMPLE = 20;
+  const MIN_SAMPLE = 5;  // T[i*] row sum ~10 at N=100 -- Laplace smoothing handles low counts
   const UNIFORM_BASELINE = 0.10;
 
   // Guard: not enough ranked data
@@ -1697,7 +1697,7 @@ function runAdvancedMatchesMode(
     confirmTicks   = 3,
   } = params || {};
 
-  const MIN_SAMPLE = 30;  // stricter than basic MATCHES
+  const MIN_SAMPLE = 8;   // T[i*] row sum ~10 at N=100
 
   // ── Guard: insufficient data ──────────────────────────────────────────────
   if (!ranked || ranked.length < 3) {
@@ -1810,8 +1810,8 @@ function runAdvancedMatchesMode(
 // Pure function — no hooks, no side effects.
 // Builds an avoid cluster from top-K digits, selects safest outside target.
 // Does NOT compute expectancy. Does NOT decide to trade.
-function runDiffersMode(ranked, rowSample, K, minClusterMass) {
-  const MIN_SAMPLE = 20;
+function runDiffersMode(ranked, rowSample, K, minClusterMass, totalTicks) {
+  const MIN_SAMPLE = 5;  // T[i*] row sum ~10 at N=100 -- Laplace smoothing handles low counts
 
   // Guard: not enough ranked data to form a cluster
   if (!ranked || ranked.length < K + 1) {
@@ -1830,6 +1830,10 @@ function runDiffersMode(ranked, rowSample, K, minClusterMass) {
       targetDigit: null, targetP: null, confidenceRaw: 0
     };
   }
+
+  // Noise gate: must have 200+ total ticks to block noise from short sessions
+  const NOISE_GATE   = 200;
+  const noisePending = (totalTicks || 0) < NOISE_GATE;
 
   // Build the avoid cluster: top-K most probable digits
   const topK         = ranked.slice(0, K);
@@ -1868,12 +1872,16 @@ function runDiffersMode(ranked, rowSample, K, minClusterMass) {
   const confidenceRaw = parseFloat(Math.min(1, clusterMass).toFixed(4));
 
   return {
-    mode: "DIFFERS", pass: true, failReason: null,
+    mode: "DIFFERS",
+    pass: !noisePending,   // PASS only after 200 ticks -- engine always computes live
+    failReason: noisePending ? "NOISE_GATE_PENDING" : null,
     avoidCluster,
     clusterMass,
     targetDigit,
     targetP,
-    confidenceRaw
+    confidenceRaw,
+    noisePending,
+    ticksNeeded: noisePending ? Math.max(0, NOISE_GATE - (totalTicks || 0)) : 0,
   };
 }
 
@@ -2207,7 +2215,7 @@ export default function DerivOracle() {
   // MATCHES: min required gap between P1 and P2
   const [meshMinProb,           setMeshMinProb]           = useState(0.14);
   // MATCHES: min absolute probability for top digit (40% above uniform 0.10)
-  const [meshMinClusterMass,    setMeshMinClusterMass]    = useState(0.35);
+  const [meshMinClusterMass,    setMeshMinClusterMass]    = useState(0.28);
   // DIFFERS: min combined probability of the avoid cluster
   const [meshMatchesResult,     setMeshMatchesResult]     = useState(null);
   const [meshDiffersResult,     setMeshDiffersResult]     = useState(null);
@@ -3396,7 +3404,8 @@ export default function DerivOracle() {
       execRanked, execRowSample, meshDominanceThreshold, meshMinProb
     );
     const differsOut = runDiffersMode(
-      execRanked, execRowSample, meshDiffersK, meshMinClusterMass
+      execRanked, execRowSample, meshDiffersK, meshMinClusterMass,
+      ticksRef.current.length   // total ticks -- noise gate inside fn
     );
 
     // ── Run confidence filter on every tick ───────────────────────────────
@@ -5942,14 +5951,24 @@ export default function DerivOracle() {
                     display:"flex", justifyContent:"space-between", alignItems:"center"}}>
                     <span>DIFFERS LAYER</span>
                     <div style={{display:"flex", gap:6, alignItems:"center"}}>
-                      <span style={{fontSize:8, color:"var(--text-dim)"}}>
-                        {differsFailReason || (differsPass ? "" : "WAITING")}
-                      </span>
                       <span style={{padding:"2px 8px", borderRadius:2, fontSize:9,
-                        background: differsPass ? "rgba(0,255,136,0.12)" : "rgba(255,107,53,0.12)",
-                        border:"1px solid " + (differsPass ? "var(--green)" : "var(--orange)"),
-                        color: differsPass ? "var(--green)" : "var(--orange)"}}>
-                        {differsPass ? "SIGNAL" : "BUILDING"}
+                        fontWeight:700, letterSpacing:1,
+                        background: differsPass
+                          ? "rgba(0,255,136,0.12)"
+                          : differsFailReason === "NOISE_GATE_PENDING"
+                            ? "rgba(255,215,0,0.10)" : "rgba(255,107,53,0.12)",
+                        border: "1px solid " + (differsPass
+                          ? "var(--green)"
+                          : differsFailReason === "NOISE_GATE_PENDING"
+                            ? "var(--yellow)" : "var(--orange)"),
+                        color: differsPass
+                          ? "var(--green)"
+                          : differsFailReason === "NOISE_GATE_PENDING"
+                            ? "var(--yellow)" : "var(--orange)"}}>
+                        {differsPass ? "SIGNAL READY"
+                          : differsFailReason === "NOISE_GATE_PENDING"
+                            ? "NOISE GATE -- " + tickCount + "/200"
+                            : differsFailReason || "BUILDING"}
                       </span>
                     </div>
                   </div>
@@ -5994,10 +6013,44 @@ export default function DerivOracle() {
                         </span>
                       )) : (
                         <span style={{fontSize:10, color:"var(--text-dim)", fontStyle:"italic"}}>
-                          {meshDiffersResult ? "Collecting: " + (meshBufRef ? meshBufRef.current.length : 0) + " ticks..." : "Waiting for ticks..."}
+                          {tickCount < 200
+  ? "Collected " + tickCount + " / 200 ticks -- need 200 for reliable DIFFERS signal"
+  : "200+ ticks collected -- signal quality sufficient"}
                         </span>
                       )}
                     </div>
+                  </div>
+
+                  {/* Tick progress bar -- noise gate: 200 ticks required for PASS */}
+                  <div style={{marginBottom:10}}>
+                    <div style={{display:"flex", justifyContent:"space-between",
+                      fontSize:8, color:"var(--text-dim)", marginBottom:4}}>
+                      <span style={{letterSpacing:1}}>
+                        TICK PROGRESS -- {tickCount < 200 ? "NOISE GATE ACTIVE" : "NOISE GATE CLEAR"}
+                      </span>
+                      <span style={{
+                        color: tickCount >= 200 ? "var(--green)"
+                          : tickCount >= 100 ? "var(--yellow)" : "var(--red)",
+                        fontWeight:700}}>
+                        {tickCount} / 200
+                      </span>
+                    </div>
+                    <div style={{height:6, background:"var(--border)",
+                      borderRadius:3, overflow:"hidden"}}>
+                      <div style={{
+                        height:"100%", borderRadius:3,
+                        width: Math.min(100, (tickCount / 200) * 100) + "%",
+                        background: tickCount >= 200 ? "var(--green)"
+                          : tickCount >= 100 ? "var(--yellow)" : "var(--red)",
+                        transition:"width 0.5s"}}/>
+                    </div>
+                    {tickCount < 200 && (
+                      <div style={{fontSize:8, color:"var(--text-dim)",
+                        marginTop:3, lineHeight:1.6}}>
+                        {200 - tickCount} more ticks needed -- ~{Math.ceil((200 - tickCount) / 60)} min on 1HZ100V.
+                        Engine computes live but PASS requires 200+ ticks to filter noise.
+                      </div>
+                    )}
                   </div>
 
                   {/* Stats grid */}
