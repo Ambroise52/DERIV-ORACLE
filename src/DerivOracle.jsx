@@ -4,6 +4,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   CartesianGrid, Area, AreaChart, Cell, ReferenceLine
 } from "recharts";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const GROQ_API_KEY = process.env.REACT_APP_GROQ_API_KEY || "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";
@@ -7063,6 +7064,7 @@ export default function DerivOracle() {
           </div>
         </div>
       )}
+      <SpeedInsights />
     </>
   );
 }
