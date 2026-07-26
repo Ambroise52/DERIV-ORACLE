@@ -4980,7 +4980,7 @@ export default function DerivOracle() {
 
                 {/* ---- LIVE SIGNAL DISPLAY ---- */}
                 <div className="execute-grid" style={{ marginBottom:10 }}>
-                  <div className={"signal-live" + (coldDigit !== null ? " hot" : "")}>
+                  <div className={"signal-live" + (execColdDigit !== null ? " hot" : "")}>
                     <div className="signal-live-label">⚡ DIFFERS TARGET · COLDEST DIGIT</div>
                     <div className="signal-live-val" style={{ color:"var(--green)" }}>
                       {execColdDigit !== null ? execColdDigit : "—"}
@@ -5001,9 +5001,9 @@ export default function DerivOracle() {
                 {/* ---- SESSION STATS ---- */}
                 <div className="exec-stat-row">
                   {[
-                    [total || "0", "TRADES", "var(--cyan)"],
-                    [wins, "WINS", "var(--green)"],
-                    [losses, "LOSSES", "var(--red)"],
+                    [execTotal || "0", "TRADES", "var(--cyan)"],
+                    [execWins, "WINS", "var(--green)"],
+                    [execLosses, "LOSSES", "var(--red)"],
                     [execWR === "—" ? "—" : execWR + "%", "WIN RATE", execWR !== "—" && parseFloat(execWR) >= 47.4 ? "var(--green)" : "var(--yellow)"],
                   ].map(([val,label,color]) => (
                     <div key={label} className="exec-stat">
@@ -5053,7 +5053,7 @@ export default function DerivOracle() {
                         🔑 Get API Token ↗
                       </a>
                       <div className="latency-bar">
-                        <div className={"latency-dot " + latClass}/>
+                        <div className={"latency-dot " + execLatClass}/>
                         <span style={{ fontSize:9, color:"var(--text-dim)", letterSpacing:1 }}>
                           {latencyMs !== null ? "RTT " + latencyMs + "ms" : "not measured"}
                         </span>
